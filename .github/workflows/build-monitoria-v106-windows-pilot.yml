@@ -2,10 +2,15 @@ name: MonitorIA 1.0.6 Windows signed PILOT (public runner, private source)
 
 # Public runner only: private source is checked out transiently and NEVER
 # committed, cached or uploaded. Artifacts/logs are publicly readable.
-# Trigger strictly by repository owner's manual workflow_dispatch.
-# Source SHA is pinned to the reviewed private PR. No workflow PR trigger.
+# Manual, or one narrowly scoped explicit push of the one-time request.
+# No ordinary code push or pull request triggers a build.
+# Source SHA is pinned to the reviewed Agent 1.0.6 PR.
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "build-requests/monitoria-106-udp-manual-onboarding.txt"
 
 permissions:
   contents: read
@@ -19,19 +24,19 @@ env:
 
 jobs:
   windows-pilot:
+    if: github.event_name == 'workflow_dispatch' || github.event.head_commit.message == '[build-monitoria-106-pilot]'
     runs-on: windows-latest
     timeout-minutes: 75
     steps:
       - name: Verify private checkout and signing credentials are configured
         shell: pwsh
         env:
-          SOURCE_TOKEN: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
           ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
           ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
           ESIGNER_CREDENTIAL_ID: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
           ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
         run: |
-          foreach ($key in @("SOURCE_TOKEN","ESIGNER_USERNAME","ESIGNER_PASSWORD","ESIGNER_CREDENTIAL_ID","ESIGNER_TOTP_SECRET")) {
+          foreach ($key in @("ESIGNER_USERNAME","ESIGNER_PASSWORD","ESIGNER_CREDENTIAL_ID","ESIGNER_TOTP_SECRET")) {
             if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($key))) {
               throw "Secret $key não configurado. Não executar builds sem autorização e assinatura."
             }
@@ -43,7 +48,7 @@ jobs:
         with:
           repository: BigCorps/MonitorIA
           ref: ${{ env.MONITORIA_SOURCE_SHA }}
-          token: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+          token: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN || github.token }}
           persist-credentials: false
 
       - name: Assert checked out private source SHA
@@ -71,13 +76,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "npm ci falhou" }
           npx tsc --noEmit -p agent/tsconfig.json
           if ($LASTEXITCODE -ne 0) { throw "TS Agent falhou" }
-          node --import tsx --test test/agent-0105-pilot.test.ts test/agent-0106-jortan-discovery.test.ts test/agent-0104-video-rtsp-reliability.test.ts
+          node --import tsx --test test/agent-0105-pilot.test.ts test/agent-0106-jortan-discovery.test.ts test/agent-0106-udp-manual-rtsp.test.ts test/agent-0104-video-rtsp-reliability.test.ts
           if ($LASTEXITCODE -ne 0) { throw "Regressoes da 1.0.6 falharam" }
 
       - name: Fetch and authenticate production Agent 1.0.5 (upgrade baseline)
         shell: pwsh
         env:
-          GH_TOKEN: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+          GH_TOKEN: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN || github.token }}
         run: |
           gh release download agent-v1.0.5 --repo BigCorps/MonitorIA --pattern MonitorIA-Setup.exe --output old-setup.exe
           if ($LASTEXITCODE -ne 0) { throw "Instalador 1.0.5 original ausente" }
