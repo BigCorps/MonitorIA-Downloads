@@ -1,0 +1,274 @@
+name: MonitorIA 1.0.6 Windows signed PILOT (public runner, private source)
+
+# Public runner only: private source is checked out transiently and NEVER
+# committed, cached or uploaded. Artifacts/logs are publicly readable.
+# Trigger strictly by repository owner's manual workflow_dispatch.
+# Source SHA is pinned to the reviewed private PR. No workflow PR trigger.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: monitoria-106-windows-pilot
+  cancel-in-progress: false
+
+env:
+  MONITORIA_SOURCE_SHA: 7928e32ef4255512ebd104bed6673a597641d592
+
+jobs:
+  windows-pilot:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    steps:
+      - name: Verify private checkout and signing credentials are configured
+        shell: pwsh
+        env:
+          SOURCE_TOKEN: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+          ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
+          ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
+          ESIGNER_CREDENTIAL_ID: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
+          ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
+        run: |
+          foreach ($key in @("SOURCE_TOKEN","ESIGNER_USERNAME","ESIGNER_PASSWORD","ESIGNER_CREDENTIAL_ID","ESIGNER_TOTP_SECRET")) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($key))) {
+              throw "Secret $key não configurado. Não executar builds sem autorização e assinatura."
+            }
+          }
+          Write-Host "Pré-requisitos de acesso privado e assinatura presentes."
+
+      - name: Checkout pinned private MonitorIA source (never publish source)
+        uses: actions/checkout@v5
+        with:
+          repository: BigCorps/MonitorIA
+          ref: ${{ env.MONITORIA_SOURCE_SHA }}
+          token: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+          persist-credentials: false
+
+      - name: Assert checked out private source SHA
+        shell: pwsh
+        run: |
+          $actual=(git rev-parse HEAD).Trim()
+          if ($actual -ne $env:MONITORIA_SOURCE_SHA) { throw "Fonte privada inesperada. Build bloqueado." }
+          if (!(Test-Path 'agent/src/index-v106.ts')) { throw "Entrypoint 1.0.6 ausente." }
+          Write-Host "Fonte privada fixada no commit validado."
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-download-url: https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-windows-x64-baseline.zip
+          no-cache: true
+
+      - name: Check compiler and hotfix tests
+        shell: pwsh
+        run: |
+          npm ci
+          if ($LASTEXITCODE -ne 0) { throw "npm ci falhou" }
+          npx tsc --noEmit -p agent/tsconfig.json
+          if ($LASTEXITCODE -ne 0) { throw "TS Agent falhou" }
+          node --import tsx --test test/agent-0105-pilot.test.ts test/agent-0106-jortan-discovery.test.ts test/agent-0104-video-rtsp-reliability.test.ts
+          if ($LASTEXITCODE -ne 0) { throw "Regressoes da 1.0.6 falharam" }
+
+      - name: Fetch and authenticate production Agent 1.0.5 (upgrade baseline)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+        run: |
+          gh release download agent-v1.0.5 --repo BigCorps/MonitorIA --pattern MonitorIA-Setup.exe --output old-setup.exe
+          if ($LASTEXITCODE -ne 0) { throw "Instalador 1.0.5 original ausente" }
+          $signature = Get-AuthenticodeSignature old-setup.exe
+          if ($signature.Status -ne 'Valid') { throw "Instalador 1.0.5 nao assinado validamente: $($signature.Status)" }
+          gh release download agent-v1.0.3 --repo BigCorps/MonitorIA --pattern MonitorIA-Setup.exe --output old-setup-v103.exe
+          if ($LASTEXITCODE -ne 0) { throw "Baseline assinado 1.0.3 indisponivel" }
+          if ((Get-AuthenticodeSignature old-setup-v103.exe).Status -ne 'Valid') { throw "Baseline 1.0.3 sem assinatura valida" }
+
+      - name: Install genuine 1.0.5 and create non-camera preservation probe
+        shell: pwsh
+        run: |
+          # Published 1.0.5 package can lack the 24/7 tray.
+          # Recover homologated signed tray from genuine 1.0.3, then
+          # upgrade to the real 1.0.5 in the same AppId and data folder.
+          $previous = (Resolve-Path old-setup-v103.exe).Path
+          $p103 = Start-Process $previous -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') -Wait -PassThru
+          if ($p103.ExitCode -ne 0) { throw "Baseline 1.0.3 falhou: $($p103.ExitCode)" }
+          $oldTray = Join-Path (Join-Path $env:ProgramFiles 'MonitorIA') 'monitoria-tray.exe'
+          if (!(Test-Path $oldTray)) { throw "Baseline 1.0.3 nao forneceu tray homologado" }
+          if ((Get-AuthenticodeSignature $oldTray).Status -ne 'Valid') { throw "Tray 1.0.3 sem assinatura" }
+          New-Item -ItemType Directory -Force -Path build | Out-Null
+          Copy-Item $oldTray build\monitoria-tray.exe -Force
+
+          $original = (Resolve-Path old-setup.exe).Path
+          $p = Start-Process $original -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Instalacao 1.0.5 falhou: $($p.ExitCode)" }
+          $root = Join-Path $env:ProgramFiles 'MonitorIA'
+          $data = Join-Path $env:ProgramData 'MonitorIA'
+          & "$root\monitoria-agent.exe" self-test
+          if ($LASTEXITCODE -ne 0) { throw "Base 1.0.5 invalida" }
+          $service = Get-Service MonitorIAAgent -ErrorAction Stop
+          if ($service.Status -ne 'Running') { throw "Servico 1.0.5 nao iniciou" }
+          New-Item -ItemType Directory -Force -Path $data | Out-Null
+          Set-Content (Join-Path $data 'pilot-v106-preservation-check.txt') 'preserve-agent-local-data' -NoNewline
+          "BASE_INSTALL_ROOT=$root" | Out-File -Append $env:GITHUB_ENV
+          "BASE_DATA_ROOT=$data" | Out-File -Append $env:GITHUB_ENV
+
+      - name: Compile real Windows 1.0.6 binary
+        shell: pwsh
+        run: |
+          Push-Location agent
+          bun build ./src/index-v106.ts --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target=bun-windows-x64-baseline --windows-icon=../installer/monitoria.ico --windows-title="MonitorIA Agent" --windows-version=1.0.6 --windows-description="MonitorIA Windows 24/7 1.0.6" --outfile ./dist/monitoria-agent.exe
+          if ($LASTEXITCODE -ne 0) { throw "Compilacao do Windows 1.0.6 falhou" }
+          Pop-Location
+          $selfTest = & agent\dist\monitoria-agent.exe self-test 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0 -or $selfTest -notmatch 'v1\.0\.6 aprovado') {
+            throw "Autoteste do Core 1.0.6 falhou: $selfTest"
+          }
+          Write-Host $selfTest
+
+      - name: Reuse original signed WinSW, DPAPI, tray and FFmpeg from 1.0.5
+        shell: pwsh
+        run: |
+          $r = $env:BASE_INSTALL_ROOT
+          New-Item -ItemType Directory -Force -Path build\ffmpeg | Out-Null
+          foreach ($binary in @('monitoria-dpapi.exe','monitoria-service.exe')) {
+            Copy-Item (Join-Path $r $binary) (Join-Path build $binary) -Force
+          }
+          if (Test-Path (Join-Path $r 'monitoria-tray.exe')) {
+            Copy-Item (Join-Path $r 'monitoria-tray.exe') build\monitoria-tray.exe -Force
+          }
+          foreach ($binary in @('monitoria-dpapi.exe','monitoria-service.exe','monitoria-tray.exe')) {
+            $target = Join-Path build $binary
+            if (!(Test-Path $target) -or (Get-AuthenticodeSignature $target).Status -ne 'Valid') {
+              throw "Dependencia nao assinada: $binary"
+            }
+          }
+          Copy-Item "$r\ffmpeg\*" build\ffmpeg -Recurse -Force
+          foreach ($required in @('ffmpeg.exe','ffprobe.exe','LICENSE.txt','FFMPEG-ORIGEM.txt')) {
+            if (!(Test-Path "build\ffmpeg\$required")) { throw "Pacote FFmpeg incompleto: $required" }
+          }
+
+      - name: Sign only new 1.0.6 Core
+        uses: sslcom/esigner-codesign@v1.3.2
+        with:
+          command: batch_sign
+          username: ${{ secrets.ESIGNER_USERNAME }}
+          password: ${{ secrets.ESIGNER_PASSWORD }}
+          credential_id: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
+          totp_secret: ${{ secrets.ESIGNER_TOTP_SECRET }}
+          dir_path: ${{ github.workspace }}\agent\dist
+          output_path: ${{ github.workspace }}\signed-core
+          malware_block: true
+          environment_name: PROD
+
+      - name: Verify signed 1.0.6 Core
+        shell: pwsh
+        run: |
+          Copy-Item signed-core\monitoria-agent.exe agent\dist\monitoria-agent.exe -Force
+          $sig = Get-AuthenticodeSignature agent\dist\monitoria-agent.exe
+          if ($sig.Status -ne 'Valid' -or !$sig.TimeStamperCertificate) {
+            throw "Core 1.0.6 nao foi assinado e carimbado"
+          }
+          $output = & agent\dist\monitoria-agent.exe self-test 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0 -or $output -notmatch 'v1\.0\.6 aprovado') { throw "Core assinado reprovado: $output" }
+
+      - name: Locate Inno Setup
+        id: inno
+        shell: pwsh
+        run: |
+          $candidates = @('C:\Program Files (x86)\Inno Setup 6\ISCC.exe','C:\Program Files\Inno Setup 6\ISCC.exe')
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup -y --no-progress
+            if ($LASTEXITCODE -ne 0) { throw "Inno Setup nao instalado" }
+            $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $iscc) { throw "ISCC nao encontrado" }
+          "path=$iscc" | Out-File -Append $env:GITHUB_OUTPUT
+
+      - name: Sign Inno 1.0.6 Setup and uninstaller with existing SSL.com gate
+        shell: pwsh
+        env:
+          ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
+          ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
+          ESIGNER_CREDENTIAL_ID: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
+          ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
+        run: |
+          $signWrapper = Join-Path $env:GITHUB_WORKSPACE 'scripts\sign-inno-authenticode.ps1'
+          if (!(Test-Path $signWrapper)) { throw "Assinatura Inno oficial ausente" }
+          if ([string]::IsNullOrWhiteSpace($env:CODE_SIGN_TOOL_PATH) -and [string]::IsNullOrWhiteSpace($env:CODESIGNTOOL_PATH)) {
+            throw "CodeSignTool indisponivel"
+          }
+          $pwsh = (Get-Command pwsh.exe -ErrorAction Stop).Source
+          $signTool = 'monitoria=$q' + $pwsh + '$q -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $q' + $signWrapper + '$q $f'
+          $env:MONITORIA_SIGN_CONTEXT = 'windows-247-pilot-106'
+          & "${{ steps.inno.outputs.path }}" '/DAppVersion=1.0.6' '/DSignCommand=1' "/S$signTool" installer\monitoria-service-v103.iss
+          if ($LASTEXITCODE -ne 0) { throw "Instalador Windows 1.0.6 nao compilado" }
+          Remove-Item Env:MONITORIA_SIGN_CONTEXT -ErrorAction SilentlyContinue
+          if (!(Test-Path dist\MonitorIA-Setup.exe)) { throw "Arquivo final nao existe" }
+          $sig = Get-AuthenticodeSignature dist\MonitorIA-Setup.exe
+          if ($sig.Status -ne 'Valid' -or !$sig.TimeStamperCertificate) { throw "Instalador piloto 1.0.6 sem Authenticode valido" }
+
+      - name: Upgrade genuine signed 1.0.5 to signed 1.0.6 and preserve local files
+        shell: pwsh
+        run: |
+          # Reproduce user's DeleteFile code 5: launch running tray and
+          # require the new installer to stop it before replacing its executable.
+          $trayExe = Join-Path $env:BASE_INSTALL_ROOT 'monitoria-tray.exe'
+          if (!(Test-Path $trayExe)) { throw "Tray ausente na baseline de upgrade" }
+          $tray = Start-Process -FilePath $trayExe -ArgumentList '--service-companion' -PassThru
+          Start-Sleep -Seconds 3
+          if (Get-Process -Id $tray.Id -ErrorAction SilentlyContinue) {
+            Write-Host "Tray ativo antes do upgrade, verificando limpeza segura do instalador."
+          } else {
+            Write-Warning "Tray encerrou sozinho no runner; o teste de lock real sera feito no computador piloto."
+          }
+          $candidate = (Resolve-Path dist\MonitorIA-Setup.exe).Path
+          $p = Start-Process $candidate -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Upgrade 1.0.5 para 1.0.6 falhou: $($p.ExitCode)" }
+          $root = $env:BASE_INSTALL_ROOT
+          $data = $env:BASE_DATA_ROOT
+          $output = & "$root\monitoria-agent.exe" self-test 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0 -or $output -notmatch 'v1\.0\.6 aprovado') { throw "Core instalado difere da 1.0.6: $output" }
+          $sentinel = Get-Content (Join-Path $data 'pilot-v106-preservation-check.txt') -Raw
+          if ($sentinel -ne 'preserve-agent-local-data') { throw "Upgrade apagou o estado local" }
+          $service = Get-Service MonitorIAAgent -ErrorAction Stop
+          if ($service.Status -ne 'Running') { throw "Servico nao ficou ativo apos upgrade" }
+          if (Get-Process -Id $tray.Id -ErrorAction SilentlyContinue) {
+            throw "Tray da versao anterior permaneceu rodando depois do upgrade"
+          }
+          $installed = Get-AuthenticodeSignature "$root\monitoria-agent.exe"
+          if ($installed.Status -ne 'Valid') { throw "Core instalado perdeu assinatura" }
+
+      - name: Compute artifact SHA-256 and pilot manifest
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash dist\MonitorIA-Setup.exe -Algorithm SHA256).Hash.ToLower()
+          $manifest = [ordered]@{
+            version = "1.0.6"
+            channel = "windows-247"
+            distribution = "pilot-only"
+            signed = $true
+            sourceCommit = $env:MONITORIA_SOURCE_SHA
+            sha256 = $hash
+            releasePublished = $false
+            storeBlobUpdated = $false
+            preservePairing = $true
+          }
+          $manifest | ConvertTo-Json | Set-Content -Path dist\pilot-manifest.json -Encoding utf8
+          "$hash  MonitorIA-Setup.exe" | Set-Content dist\SHA256SUMS.txt -Encoding ascii
+          Write-Host "SHA256 do Windows piloto 1.0.6: $hash"
+
+      - name: Upload signed Windows PILOT installer only (public artifact, no source)
+        uses: actions/upload-artifact@v4
+        with:
+          name: MonitorIA-Agent-1.0.6-Windows-PILOTO
+          path: |
+            dist/MonitorIA-Setup.exe
+            dist/pilot-manifest.json
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 2
