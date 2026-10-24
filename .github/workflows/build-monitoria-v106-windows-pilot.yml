@@ -7,10 +7,6 @@ name: MonitorIA 1.0.6 Windows signed PILOT (public runner, private source)
 # Source SHA is pinned to the reviewed Agent 1.0.6 PR.
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - "build-requests/monitoria-106-udp-manual-onboarding.txt"
 
 permissions:
   contents: read
