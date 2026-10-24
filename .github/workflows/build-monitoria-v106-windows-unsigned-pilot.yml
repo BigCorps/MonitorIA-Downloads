@@ -8,10 +8,6 @@ name: MonitorIA 1.0.6 Windows UNSIGNED hardware PILOT
 # No customer release. A single authorized marker push on main.
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - "build-requests/monitoria-106-unsigned-pilot.txt"
 
 permissions:
   contents: read
