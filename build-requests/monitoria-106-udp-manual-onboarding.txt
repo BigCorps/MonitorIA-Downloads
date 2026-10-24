@@ -1,0 +1,4 @@
+MonitorIA Agent 1.0.6 — Windows pilot, user-approved 24 Oct 2026
+Pinned reviewed source: 8bafa53ba16894c4e7d18d8096c924a91d7ad86e
+Purpose: validate UDP fallback + optional manual RTSP onboarding with a signed Windows upgrade from 1.0.5.
+One-time request; no production release, Store publish or Linux build.
