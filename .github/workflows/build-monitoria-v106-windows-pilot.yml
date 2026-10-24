@@ -212,6 +212,14 @@ jobs:
           if (!(Test-Path dist\MonitorIA-Setup.exe)) { throw "Arquivo final nao existe" }
           $sig = Get-AuthenticodeSignature dist\MonitorIA-Setup.exe
           if ($sig.Status -ne 'Valid' -or !$sig.TimeStamperCertificate) { throw "Instalador piloto 1.0.6 sem Authenticode valido" }
+          $previousPublisher = (Get-AuthenticodeSignature old-setup.exe).SignerCertificate.Subject
+          if ($sig.SignerCertificate.Subject -ne $previousPublisher) {
+            throw "Setup 1.0.6 assinado por publicador diferente do 1.0.5"
+          }
+          $signedCore = Get-AuthenticodeSignature agent\dist\monitoria-agent.exe
+          if ($signedCore.SignerCertificate.Subject -ne $previousPublisher) {
+            throw "Core 1.0.6 assinado por publicador diferente do 1.0.5"
+          }
 
       - name: Upgrade genuine signed 1.0.5 to signed 1.0.6 and preserve local files
         shell: pwsh
