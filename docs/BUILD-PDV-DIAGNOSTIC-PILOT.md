@@ -1,0 +1,13 @@
+# Build Windows do piloto diagnóstico PDV
+
+Esta branch `build/pdv-diagnostic-pilot` usa runner Windows padrão do repositório público e fonte privada fixada em `ae91c451f1b7f8de5903b0aab08bb3261986a188`. A `main`, os downloads oficiais, a Store e outros clientes permanecem inalterados.
+
+No GitHub, abra Actions → `MonitorIA Windows signed PILOT` (arquivo já registrado `build-monitoria-v106-windows-pilot.yml`) → Run workflow → selecione **build/pdv-diagnostic-pilot** → Run workflow. Esse único clique autoriza compilação e assinatura do piloto. Nunca selecionar `main` para este piloto. Não há gatilho de push/PR, cache ou upload-artifact. Não repetir falha de credencial/assinatura sem resolver a causa.
+
+São necessários os bindings existentes `MONITORIA_PRIVATE_SOURCE_TOKEN` (leitura somente do repositório privado) e `ESIGNER_USERNAME`, `ESIGNER_PASSWORD`, `ESIGNER_CREDENTIAL_ID`, `ESIGNER_TOTP_SECRET`. O preflight verifica apenas presença; não imprime valores. Para configurar manualmente o acesso privado, usar token fine-grained com proprietário BigCorps, somente o repositório BigCorps/MonitorIA, Contents: Read-only e expiração curta. Não ampliar permissões ou criar segredos automaticamente. Os valores SSL.com devem vir da fonte segura original; não podem ser recuperados dos secrets existentes do GitHub. Nunca enviar valores por chat.
+
+O GITHUB_TOKEN do repositório público publica exclusivamente um **draft prerelease não publicado** com EXE, manifesto, SHA, verificador e procedimento. O token privado serve somente ao checkout e ao download das baselines assinadas. Fonte e dependências ficam transitórias no runner, sem cache/artifacts; os logs são públicos e não devem conter código ou configurações privadas. Draft não equivale a autorização para publicar a release. Revisar permissões dos colaboradores antes de usar segredos de assinatura.
+
+O pacote exige assinatura/timestamp e mesmo publicador do Agent anterior, testes com FFmpeg inalterado, upgrade real preservando dados, serviço ativo, identidade diagnóstica e download com SHA idêntico. Mantém `productionReconciliationReady=false`. O resultado não prova precisão visual ou homologação da Dreams Food. O backend, câmera/terminal/zona autorizados e teste real continuam necessários.
+
+Revisar o draft e baixar seus cinco arquivos. Execute `Verify-PdvPilotPackage.ps1 -PackageDirectory .` antes de instalar; não há override sem assinatura. A validade de sete dias limita a distribuição/verificação, não desliga o serviço já instalado. Nenhuma credencial de cliente é embutida. Não publicar o draft nem atualizar links oficiais como consequência automática do build.

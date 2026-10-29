@@ -1,0 +1,374 @@
+name: Build signed PDV diagnostic pilot on public runner
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    secrets:
+      MONITORIA_PRIVATE_SOURCE_TOKEN:
+        required: true
+      ESIGNER_USERNAME:
+        required: true
+      ESIGNER_PASSWORD:
+        required: true
+      ESIGNER_CREDENTIAL_ID:
+        required: true
+      ESIGNER_TOTP_SECRET:
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: downloads-pdv-diagnostic-pilot
+  cancel-in-progress: false
+
+env:
+  MONITORIA_SOURCE_SHA: ae91c451f1b7f8de5903b0aab08bb3261986a188
+
+jobs:
+  windows-pilot:
+    if: github.repository == 'BigCorps/MonitorIA-Downloads' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/build/pdv-diagnostic-pilot'
+    permissions:
+      contents: write
+    runs-on: windows-latest
+    timeout-minutes: 75
+    steps:
+      - name: Validate credential bindings before checkout or signing
+        shell: pwsh
+        env:
+          MONITORIA_PRIVATE_SOURCE_TOKEN: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+          ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
+          ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
+          ESIGNER_CREDENTIAL_ID: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
+          ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
+        run: |
+          foreach ($name in @('MONITORIA_PRIVATE_SOURCE_TOKEN','ESIGNER_USERNAME','ESIGNER_PASSWORD','ESIGNER_CREDENTIAL_ID','ESIGNER_TOTP_SECRET')) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { throw "Missing required binding: $name" }
+          }
+      - name: Checkout pinned private source without persisted credentials
+        uses: actions/checkout@v5
+        with:
+          repository: BigCorps/MonitorIA
+          ref: ${{ env.MONITORIA_SOURCE_SHA }}
+          token: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify exact private source before executing it
+        shell: pwsh
+        run: |
+          if ((git rev-parse HEAD).Trim() -ne $env:MONITORIA_SOURCE_SHA) { throw "Unexpected private source" }
+          if (!(Test-Path agent/src/index-v106-pdv-pilot.ts)) { throw "Pilot entrypoint absent" }
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-download-url: https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-windows-x64-baseline.zip
+          no-cache: true
+
+      - name: Check compiler and hotfix tests
+        shell: pwsh
+        run: |
+          npm ci *> (Join-Path $env:RUNNER_TEMP 'pdv-private-npm.log')
+          if ($LASTEXITCODE -ne 0) { throw "npm ci falhou" }
+          npx tsc --noEmit -p agent/tsconfig.json *> (Join-Path $env:RUNNER_TEMP 'pdv-private-tsc.log')
+          if ($LASTEXITCODE -ne 0) { throw "TS Agent falhou" }
+          node --import tsx --test test/agent-pdv-pilot-package.test.ts *> (Join-Path $env:RUNNER_TEMP 'pdv-private-package-tests.log')
+          if ($LASTEXITCODE -ne 0) { throw "Regressoes da 1.0.6 falharam" }
+
+      - name: Verify signing binding presence without printing values
+        shell: pwsh
+        env:
+          ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
+          ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
+          ESIGNER_CREDENTIAL_ID: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
+          ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
+        run: |
+          foreach ($name in @('ESIGNER_USERNAME','ESIGNER_PASSWORD','ESIGNER_CREDENTIAL_ID','ESIGNER_TOTP_SECRET')) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { throw "Missing signing binding: $name" }
+          }
+
+      - name: Fetch and authenticate production Agent 1.0.5 (upgrade baseline)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+        run: |
+          gh release download agent-v1.0.5 --repo BigCorps/MonitorIA --pattern MonitorIA-Setup.exe --output old-setup.exe
+          if ($LASTEXITCODE -ne 0) { throw "Instalador 1.0.5 original ausente" }
+          $signature = Get-AuthenticodeSignature old-setup.exe
+          if ($signature.Status -ne 'Valid') { throw "Instalador 1.0.5 nao assinado validamente: $($signature.Status)" }
+          gh release download agent-v1.0.3 --repo BigCorps/MonitorIA --pattern MonitorIA-Setup.exe --output old-setup-v103.exe
+          if ($LASTEXITCODE -ne 0) { throw "Baseline assinado 1.0.3 indisponivel" }
+          if ((Get-AuthenticodeSignature old-setup-v103.exe).Status -ne 'Valid') { throw "Baseline 1.0.3 sem assinatura valida" }
+
+      - name: Install genuine 1.0.5 and create non-camera preservation probe
+        shell: pwsh
+        run: |
+          # Published 1.0.5 package can lack the 24/7 tray.
+          # Recover homologated signed tray from genuine 1.0.3, then
+          # upgrade to the real 1.0.5 in the same AppId and data folder.
+          $previous = (Resolve-Path old-setup-v103.exe).Path
+          $p103 = Start-Process $previous -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') -Wait -PassThru
+          if ($p103.ExitCode -ne 0) { throw "Baseline 1.0.3 falhou: $($p103.ExitCode)" }
+          $oldTray = Join-Path (Join-Path $env:ProgramFiles 'MonitorIA') 'monitoria-tray.exe'
+          if (!(Test-Path $oldTray)) { throw "Baseline 1.0.3 nao forneceu tray homologado" }
+          if ((Get-AuthenticodeSignature $oldTray).Status -ne 'Valid') { throw "Tray 1.0.3 sem assinatura" }
+          New-Item -ItemType Directory -Force -Path build | Out-Null
+          Copy-Item $oldTray build\monitoria-tray.exe -Force
+
+          $original = (Resolve-Path old-setup.exe).Path
+          $p = Start-Process $original -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Instalacao 1.0.5 falhou: $($p.ExitCode)" }
+          $root = Join-Path $env:ProgramFiles 'MonitorIA'
+          $data = Join-Path $env:ProgramData 'MonitorIA'
+          & "$root\monitoria-agent.exe" self-test
+          if ($LASTEXITCODE -ne 0) { throw "Base 1.0.5 invalida" }
+          $service = Get-Service MonitorIAAgent -ErrorAction Stop
+          if ($service.Status -ne 'Running') { throw "Servico 1.0.5 nao iniciou" }
+          New-Item -ItemType Directory -Force -Path $data | Out-Null
+          Set-Content (Join-Path $data 'pilot-v106-preservation-check.txt') 'preserve-agent-local-data' -NoNewline
+          "BASE_INSTALL_ROOT=$root" | Out-File -Append $env:GITHUB_ENV
+          "BASE_DATA_ROOT=$data" | Out-File -Append $env:GITHUB_ENV
+
+      - name: Compile real Windows 1.0.6 binary
+        shell: pwsh
+        run: |
+          Push-Location agent
+          bun build ./src/index-v106-pdv-pilot.ts --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target=bun-windows-x64-baseline --windows-icon=../installer/monitoria.ico --windows-title="MonitorIA Agent" --windows-version=1.0.6 --windows-description="MonitorIA PDV diagnostic pilot 1.0.6" --outfile ./dist/monitoria-agent.exe *> (Join-Path $env:RUNNER_TEMP 'pdv-private-compile.log')
+          if ($LASTEXITCODE -ne 0) { throw "Compilacao do Windows 1.0.6 falhou" }
+          Pop-Location
+          $selfTest = & agent\dist\monitoria-agent.exe self-test 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0 -or $selfTest -notmatch 'v1\.0\.6 aprovado') {
+            throw "Autoteste do Core 1.0.6 falhou: $selfTest"
+          }
+          Write-Host $selfTest
+
+      - name: Reuse original signed WinSW, DPAPI, tray and FFmpeg from 1.0.5
+        shell: pwsh
+        run: |
+          $r = $env:BASE_INSTALL_ROOT
+          New-Item -ItemType Directory -Force -Path build\ffmpeg | Out-Null
+          foreach ($binary in @('monitoria-dpapi.exe','monitoria-service.exe')) {
+            Copy-Item (Join-Path $r $binary) (Join-Path build $binary) -Force
+          }
+          if (Test-Path (Join-Path $r 'monitoria-tray.exe')) {
+            Copy-Item (Join-Path $r 'monitoria-tray.exe') build\monitoria-tray.exe -Force
+          }
+          foreach ($binary in @('monitoria-dpapi.exe','monitoria-service.exe','monitoria-tray.exe')) {
+            $target = Join-Path build $binary
+            if (!(Test-Path $target) -or (Get-AuthenticodeSignature $target).Status -ne 'Valid') {
+              throw "Dependencia nao assinada: $binary"
+            }
+          }
+          Copy-Item "$r\ffmpeg\*" build\ffmpeg -Recurse -Force
+          foreach ($required in @('ffmpeg.exe','ffprobe.exe','LICENSE.txt','FFMPEG-ORIGEM.txt')) {
+            if (!(Test-Path "build\ffmpeg\$required")) { throw "Pacote FFmpeg incompleto: $required" }
+          }
+
+      - name: Run PDV regressions with the unchanged packaged FFmpeg
+        shell: pwsh
+        run: |
+          $env:PATH = (Resolve-Path build\ffmpeg).Path + [IO.Path]::PathSeparator + $env:PATH
+          $tests = @(Get-ChildItem test -Filter 'agent-integration-*.test.ts' | ForEach-Object { $_.FullName })
+          $tests += @('test/agent-0105-pilot.test.ts','test/agent-0106-jortan-discovery.test.ts','test/agent-0106-udp-manual-rtsp.test.ts','test/agent-0104-video-rtsp-reliability.test.ts')
+          & node --import tsx --test @tests *> (Join-Path $env:RUNNER_TEMP 'pdv-private-regression-tests.log')
+          if ($LASTEXITCODE -ne 0) { throw "PDV or ordinary Agent regression failed" }
+          $info = & agent\dist\monitoria-agent.exe pdv-pilot-info | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $info.variant -ne 'pdv-diagnostic-pilot' -or !$info.temporalEnabled -or !$info.activityEnabled -or $info.experimentalTimingEnabled -or $info.productionReconciliationReady) { throw "Wrong pilot capability policy" }
+          foreach ($target in Get-ChildItem build\ffmpeg -File | Where-Object { $_.Extension -in @('.exe','.dll') }) {
+            $signature = Get-AuthenticodeSignature $target.FullName
+            if ($signature.Status -ne 'Valid' -or !$signature.TimeStamperCertificate) { throw "Untrusted unchanged FFmpeg dependency" }
+          }
+
+      - name: Sign only new 1.0.6 Core
+        uses: sslcom/esigner-codesign@v1.3.2
+        with:
+          command: batch_sign
+          username: ${{ secrets.ESIGNER_USERNAME }}
+          password: ${{ secrets.ESIGNER_PASSWORD }}
+          credential_id: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
+          totp_secret: ${{ secrets.ESIGNER_TOTP_SECRET }}
+          dir_path: ${{ github.workspace }}\agent\dist
+          output_path: ${{ github.workspace }}\signed-core
+          malware_block: true
+          environment_name: PROD
+
+      - name: Verify signed 1.0.6 Core
+        shell: pwsh
+        run: |
+          Copy-Item signed-core\monitoria-agent.exe agent\dist\monitoria-agent.exe -Force
+          $sig = Get-AuthenticodeSignature agent\dist\monitoria-agent.exe
+          if ($sig.Status -ne 'Valid' -or !$sig.TimeStamperCertificate) {
+            throw "Core 1.0.6 nao foi assinado e carimbado"
+          }
+          $output = & agent\dist\monitoria-agent.exe self-test 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0 -or $output -notmatch 'v1\.0\.6 aprovado') { throw "Core assinado reprovado: $output" }
+
+      - name: Locate Inno Setup
+        id: inno
+        shell: pwsh
+        run: |
+          $candidates = @('C:\Program Files (x86)\Inno Setup 6\ISCC.exe','C:\Program Files\Inno Setup 6\ISCC.exe')
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup -y --no-progress
+            if ($LASTEXITCODE -ne 0) { throw "Inno Setup nao instalado" }
+            $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $iscc) { throw "ISCC nao encontrado" }
+          "path=$iscc" | Out-File -Append $env:GITHUB_OUTPUT
+
+      - name: Sign Inno 1.0.6 Setup and uninstaller with existing SSL.com gate
+        shell: pwsh
+        env:
+          ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
+          ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
+          ESIGNER_CREDENTIAL_ID: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
+          ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
+        run: |
+          $signWrapper = Join-Path $env:GITHUB_WORKSPACE 'scripts\sign-inno-authenticode.ps1'
+          if (!(Test-Path $signWrapper)) { throw "Assinatura Inno oficial ausente" }
+          if ([string]::IsNullOrWhiteSpace($env:CODE_SIGN_TOOL_PATH) -and [string]::IsNullOrWhiteSpace($env:CODESIGNTOOL_PATH)) {
+            throw "CodeSignTool indisponivel"
+          }
+          $pwsh = (Get-Command pwsh.exe -ErrorAction Stop).Source
+          $signTool = 'monitoria=$q' + $pwsh + '$q -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $q' + $signWrapper + '$q $f'
+          $env:MONITORIA_SIGN_CONTEXT = 'windows-247-pdv-diagnostic-pilot'
+          & "${{ steps.inno.outputs.path }}" '/DAppVersion=1.0.6' '/DSignCommand=1' "/S$signTool" installer\monitoria-service-v103.iss
+          if ($LASTEXITCODE -ne 0) { throw "Instalador Windows 1.0.6 nao compilado" }
+          Remove-Item Env:MONITORIA_SIGN_CONTEXT -ErrorAction SilentlyContinue
+          if (!(Test-Path dist\MonitorIA-Setup.exe)) { throw "Arquivo final nao existe" }
+          $sig = Get-AuthenticodeSignature dist\MonitorIA-Setup.exe
+          if ($sig.Status -ne 'Valid' -or !$sig.TimeStamperCertificate) { throw "Instalador piloto 1.0.6 sem Authenticode valido" }
+          $originalSigner = (Get-AuthenticodeSignature old-setup.exe).SignerCertificate.Subject
+          if ($sig.SignerCertificate.Subject -ne $originalSigner) { throw "Setup 1.0.6 nao foi assinado pelo mesmo publicador da 1.0.5" }
+          $coreSigner = (Get-AuthenticodeSignature agent\dist\monitoria-agent.exe).SignerCertificate.Subject
+          if ($coreSigner -ne $originalSigner) { throw "Core 1.0.6 nao foi assinado pelo mesmo publicador da 1.0.5" }
+
+      - name: Upgrade genuine signed 1.0.5 to signed 1.0.6 and preserve local files
+        shell: pwsh
+        run: |
+          # Reproduce user's DeleteFile code 5: launch running tray and
+          # require the new installer to stop it before replacing its executable.
+          $trayExe = Join-Path $env:BASE_INSTALL_ROOT 'monitoria-tray.exe'
+          if (!(Test-Path $trayExe)) { throw "Tray ausente na baseline de upgrade" }
+          $tray = Start-Process -FilePath $trayExe -ArgumentList '--service-companion' -PassThru
+          Start-Sleep -Seconds 3
+          if (Get-Process -Id $tray.Id -ErrorAction SilentlyContinue) {
+            Write-Host "Tray ativo antes do upgrade, verificando limpeza segura do instalador."
+          } else {
+            Write-Warning "Tray encerrou sozinho no runner; o teste de lock real sera feito no computador piloto."
+          }
+          $candidate = (Resolve-Path dist\MonitorIA-Setup.exe).Path
+          $p = Start-Process $candidate -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Upgrade 1.0.5 para 1.0.6 falhou: $($p.ExitCode)" }
+          $root = $env:BASE_INSTALL_ROOT
+          $data = $env:BASE_DATA_ROOT
+          $output = & "$root\monitoria-agent.exe" self-test 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0 -or $output -notmatch 'v1\.0\.6 aprovado') { throw "Core instalado difere da 1.0.6: $output" }
+          $sentinel = Get-Content (Join-Path $data 'pilot-v106-preservation-check.txt') -Raw
+          if ($sentinel -ne 'preserve-agent-local-data') { throw "Upgrade apagou o estado local" }
+          $service = Get-Service MonitorIAAgent -ErrorAction Stop
+          if ($service.Status -ne 'Running') { throw "Servico nao ficou ativo apos upgrade" }
+          if (Get-Process -Id $tray.Id -ErrorAction SilentlyContinue) {
+            throw "Tray da versao anterior permaneceu rodando depois do upgrade"
+          }
+          $installed = Get-AuthenticodeSignature "$root\monitoria-agent.exe"
+          if ($installed.Status -ne 'Valid') { throw "Core instalado perdeu assinatura" }
+          $uninstaller = Get-AuthenticodeSignature (Join-Path $root 'unins000.exe')
+          if ($uninstaller.Status -ne 'Valid' -or !$uninstaller.TimeStamperCertificate -or $uninstaller.SignerCertificate.Subject -ne (Get-AuthenticodeSignature old-setup.exe).SignerCertificate.Subject) { throw "Uninstaller failed signed-package gate" }
+          $identity = & "$root\monitoria-agent.exe" pdv-pilot-info | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $identity.variant -ne 'pdv-diagnostic-pilot' -or $identity.experimentalTimingEnabled -or $identity.productionReconciliationReady) { throw "Installed binary is not the diagnostic pilot" }
+          $readiness = $null
+          for ($attempt = 0; $attempt -lt 5; $attempt++) {
+            $readinessText = & "$root\monitoria-agent.exe" pdv-pilot-readiness
+            $readinessExit = $LASTEXITCODE
+            $readiness = $readinessText | ConvertFrom-Json
+            if ($readiness.serviceVariantConfirmed -eq $true) { break }
+            Start-Sleep -Seconds 1
+          }
+          if ($readinessExit -notin @(0,2) -or $readiness.serviceVariantConfirmed -ne $true -or $readiness.productionReconciliationReady -or $readiness.endToEndReady) { throw "Installed service variant or honest readiness check failed" }
+
+      - name: Preserve only final signed package as unpublished draft prerelease
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $short = $env:MONITORIA_SOURCE_SHA.Substring(0,12)
+          $filename = "MonitorIA-PDV-Pilot-1.0.6-$short.exe"
+          $folder = 'pdv-pilot-package'
+          New-Item -ItemType Directory -Force -Path $folder | Out-Null
+          Copy-Item dist\MonitorIA-Setup.exe "$folder\$filename"
+          Copy-Item scripts\verify-pdv-pilot-package.ps1 "$folder\Verify-PdvPilotPackage.ps1"
+          @'
+          # MonitorIA PDV — piloto diagnóstico Windows 1.0.6
+
+          Pacote exclusivo para teste autorizado. Não comprova compra completa,
+          SKU ou conciliação automática. Não é atualização geral do Agent.
+          Confira a origem no workflow BigCorps/MonitorIA-Downloads, branch
+          build/pdv-diagnostic-pilot, e o SHA privado fixado no manifesto.
+          Baixe os cinco arquivos juntos e execute em PowerShell:
+          .\Verify-PdvPilotPackage.ps1 -PackageDirectory .
+          Esse comando somente verifica, não instala. Não ignore falhas de
+          assinatura, publicador, SHA ou validade de distribuição de sete dias.
+          Depois da verificação, execute o instalador assinado. Ele preserva
+          o pareamento e atualiza o único serviço MonitorIAAgent da máquina.
+          Não desinstale a versão anterior para fazer a atualização.
+          Após instalar, consulte:
+          & "$env:ProgramFiles\MonitorIA\monitoria-agent.exe" pdv-pilot-info
+          & "$env:ProgramFiles\MonitorIA\monitoria-agent.exe" pdv-pilot-readiness
+          Backend autorizado e vínculos câmera/terminal/zona são obrigatórios.
+          local_observation_only não comprova upload nem resultado no servidor.
+          O teste real deve comparar compras conhecidas e evidências com vendas;
+          o manifesto mantém productionReconciliationReady=false.
+          '@ | Set-Content "$folder\README.md" -Encoding utf8
+          $signature = Get-AuthenticodeSignature "$folder\$filename"
+          if ($signature.Status -ne 'Valid' -or !$signature.TimeStamperCertificate) { throw "Final package lost signature" }
+          $hash = (Get-FileHash "$folder\$filename" -Algorithm SHA256).Hash.ToLower()
+          $manifest = [ordered]@{
+            contractVersion = 1
+            version = '1.0.6'
+            variant = 'pdv-diagnostic-pilot'
+            filename = $filename
+            sourceCommit = $env:MONITORIA_SOURCE_SHA
+            distributionWorkflowCommit = $env:GITHUB_SHA
+            workflowRun = $env:GITHUB_RUN_ID
+            generatedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            expiresAtUtc = (Get-Date).ToUniversalTime().AddDays(7).ToString('o')
+            sha256 = $hash
+            signerSubject = $signature.SignerCertificate.Subject
+            preservePairing = $true
+            releasePublished = $false
+            defaultChannelUpdated = $false
+            storeBlobUpdated = $false
+            productionReconciliationReady = $false
+          }
+          $manifest | ConvertTo-Json | Set-Content "$folder\pilot-manifest.json" -Encoding utf8
+          "$hash  $filename" | Set-Content "$folder\SHA256SUMS.txt" -Encoding ascii
+          & scripts\verify-pdv-pilot-package.ps1 -PackageDirectory $folder
+          if ($LASTEXITCODE -ne 0) { throw "Package verifier rejected the build" }
+          $tag = "pdv-pilot-$short-$env:GITHUB_RUN_ID"
+          @"
+          Diagnostic PDV pilot only; automatic real purchase reconciliation is not homologated.
+          Source: $env:MONITORIA_SOURCE_SHA
+          Distribution workflow: $env:GITHUB_SHA
+          This unpublished draft does not update the official Agent or Store channel.
+          "@ | Set-Content pilot-release-notes.txt -Encoding utf8
+          gh release create $tag --repo BigCorps/MonitorIA-Downloads --target $env:GITHUB_SHA --draft --prerelease --title "PDV diagnostic pilot $short" --notes-file pilot-release-notes.txt "$folder\$filename" "$folder\pilot-manifest.json" "$folder\SHA256SUMS.txt" "$folder\Verify-PdvPilotPackage.ps1" "$folder\README.md"
+          if ($LASTEXITCODE -ne 0) { throw "Signed package could not be preserved; do not rebuild automatically" }
+          New-Item -ItemType Directory -Path downloaded-package | Out-Null
+          gh release download $tag --repo BigCorps/MonitorIA-Downloads --pattern $filename --dir downloaded-package
+          if ($LASTEXITCODE -ne 0 -or (Get-FileHash "downloaded-package\$filename" -Algorithm SHA256).Hash.ToLower() -ne $hash) { throw "Uploaded package roundtrip mismatch" }
+          "Unpublished draft preserved: $tag; source $env:MONITORIA_SOURCE_SHA; SHA256 $hash" | Out-File -Append $env:GITHUB_STEP_SUMMARY
+
+      - name: Remove transient private source and build products
+        if: always()
+        shell: pwsh
+        run: |
+          Get-ChildItem $env:RUNNER_TEMP -Filter 'pdv-private-*.log' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+          foreach ($directory in @('.git','src','test','agent','installer','scripts','docs','node_modules','build','signed-core','dist','pdv-pilot-package','downloaded-package')) {
+            if (Test-Path $directory) { Remove-Item $directory -Recurse -Force -ErrorAction SilentlyContinue }
+          }
