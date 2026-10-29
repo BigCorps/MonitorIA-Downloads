@@ -20,7 +20,6 @@ jobs:
       contents: write
     env:
       MONITORIA_SOURCE_DIR: ${{ github.workspace }}/_monitoria_source
-      PRIVATE_LOGS: ${{ runner.temp }}/android-preview-private
       EXPECTED_CERT_SHA256: ${{ vars.MONITORIA_ANDROID_CERT_SHA256 }}
     steps:
       - name: Check access and persistent signing bindings before checkout or SDK
@@ -62,8 +61,8 @@ jobs:
           PUBLIC_TOKEN: ${{ github.token }}
         run: |
           umask 077
-          mkdir -p "$PRIVATE_LOGS"
-          if ! python3 "$MONITORIA_SOURCE_DIR/android-agent/tools/downloads-preview.py" preflight > "$PRIVATE_LOGS/preflight-console.log" 2>&1; then
+          mkdir -p "$RUNNER_TEMP/android-preview-private"
+          if ! python3 "$MONITORIA_SOURCE_DIR/android-agent/tools/downloads-preview.py" preflight > "$RUNNER_TEMP/android-preview-private/preflight-console.log" 2>&1; then
             echo "::error::Source, baseline identity or release inventory preflight failed; no build performed."
             exit 1
           fi
@@ -81,7 +80,7 @@ jobs:
           log-accepted-android-sdk-licenses: false
       - name: Compile, lint, interop, licenses and isolated PostgreSQL (private diagnostics only)
         run: |
-          if ! python3 "$MONITORIA_SOURCE_DIR/android-agent/tools/downloads-preview.py" validate > "$PRIVATE_LOGS/validate-console.log" 2>&1; then
+          if ! python3 "$MONITORIA_SOURCE_DIR/android-agent/tools/downloads-preview.py" validate > "$RUNNER_TEMP/android-preview-private/validate-console.log" 2>&1; then
             echo "::error::Android validation failed; private diagnostics are not uploaded."
             exit 1
           fi
@@ -106,7 +105,7 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -memory 2048
           script: |
-            if ! python3 "$MONITORIA_SOURCE_DIR/android-agent/tools/downloads-preview.py" instrumented > "$PRIVATE_LOGS/instrumented-console.log" 2>&1; then
+            if ! python3 "$MONITORIA_SOURCE_DIR/android-agent/tools/downloads-preview.py" instrumented > "$RUNNER_TEMP/android-preview-private/instrumented-console.log" 2>&1; then
               echo "::error::Android instrumentation failed; no APK will be published."
               exit 1
             fi
@@ -117,7 +116,7 @@ jobs:
           MONITORIA_ANDROID_KEY_ALIAS: ${{ secrets.MONITORIA_ANDROID_KEY_ALIAS }}
           MONITORIA_ANDROID_KEY_PASSWORD: ${{ secrets.MONITORIA_ANDROID_KEY_PASSWORD }}
         run: |
-          if ! python3 "$MONITORIA_SOURCE_DIR/android-agent/tools/downloads-preview.py" sign > "$PRIVATE_LOGS/sign-console.log" 2>&1; then
+          if ! python3 "$MONITORIA_SOURCE_DIR/android-agent/tools/downloads-preview.py" sign > "$RUNNER_TEMP/android-preview-private/sign-console.log" 2>&1; then
             echo "::error::Persistent signature, certificate or APK verification failed; no publication."
             exit 1
           fi
@@ -126,12 +125,12 @@ jobs:
           SOURCE_TOKEN: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
           PUBLIC_TOKEN: ${{ github.token }}
         run: |
-          if ! python3 "$MONITORIA_SOURCE_DIR/android-agent/tools/downloads-preview.py" publish > "$PRIVATE_LOGS/publish-console.log" 2>&1; then
+          if ! python3 "$MONITORIA_SOURCE_DIR/android-agent/tools/downloads-preview.py" publish > "$RUNNER_TEMP/android-preview-private/publish-console.log" 2>&1; then
             echo "::error::Preview publication stopped; no automatic overwrite or retry."
             exit 1
           fi
           echo "Android preview verified. Download metadata is in the job summary."
       - name: Remove private source, logs, signing material and temporary packages
         if: always()
-        run: rm -rf -- "$MONITORIA_SOURCE_DIR" "$PRIVATE_LOGS" "$RUNNER_TEMP/android-preview-out"
+        run: rm -rf -- "$MONITORIA_SOURCE_DIR" "$RUNNER_TEMP/android-preview-private" "$RUNNER_TEMP/android-preview-out"
 

@@ -1,0 +1,35 @@
+name: Android signing provisioning (no build)
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [public-keys, install]
+        default: public-keys
+        required: true
+      encrypted_payload:
+        description: GitHub sealed ciphertext JSON only; never plaintext secrets
+        type: string
+        required: false
+permissions:
+  contents: read
+concurrency:
+  group: android-signing-provisioning
+  cancel-in-progress: false
+jobs:
+  provision:
+    if: github.repository == 'BigCorps/MonitorIA-Downloads' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Validate provisioner without credentials
+        run: python3 tools/test-android-signing-provision.py
+      - name: Public keys or installation of existing sealed signing secrets
+        env:
+          PROVISIONING_TOKEN: ${{ secrets.ANDROID_PROVISIONING_TOKEN }}
+          MODE: ${{ inputs.mode }}
+          ENCRYPTED_PAYLOAD: ${{ inputs.encrypted_payload }}
+        run: python3 tools/android-signing-provision.py
