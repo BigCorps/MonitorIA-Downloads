@@ -9,16 +9,38 @@ class Stop(Exception):pass
 class NoRedirect(urllib.request.HTTPRedirectHandler):
  def redirect_request(self,*args,**kwargs):return None
 
+def failure_details(error,method,path):
+ # Paths contain only fixed repository/environment/secret NAMES, never values.
+ parts=[f'GitHub API HTTP {error.code}: {method} /{path}']
+ headers=error.headers or {}
+ accepted=headers.get('X-Accepted-GitHub-Permissions','')
+ if re.fullmatch(r'[A-Za-z0-9_=,; -]{1,300}',accepted):
+  parts.append('accepted repository permissions: '+accepted)
+ if headers.get('X-RateLimit-Remaining')=='0':parts.append('rate limit exhausted')
+ # Never print arbitrary server bodies: classify only known fixed phrases.
+ try:
+  message=json.loads(error.read(8192)).get('message','').lower()
+  if 'upgrade' in message and ('plan' in message or 'pro' in message):parts.append('GitHub plan upgrade required for this resource')
+  elif 'resource not accessible' in message:parts.append('resource not accessible to this credential')
+  elif 'rate limit' in message:parts.append('rate limit restriction')
+  elif 'saml' in message or 'single sign' in message:parts.append('SSO authorization required')
+  elif 'admin' in message:parts.append('repository administration access required by endpoint')
+ except Exception:pass
+ return '; '.join(parts)+'; token, request/response bodies and private keys were not logged'
+
 def api(path,method='GET',body=None,missing=False):
  token=os.environ.get('PROVISIONING_TOKEN','')
  if not token:raise Stop('ANDROID_PROVISIONING_TOKEN missing in Downloads repository secrets')
  req=urllib.request.Request('https://api.github.com/'+path,method=method,data=None if body is None else json.dumps(body).encode(),headers={'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json','Content-Type':'application/json','X-GitHub-Api-Version':'2022-11-28'})
  try:
   with urllib.request.build_opener(NoRedirect).open(req,timeout=20) as r:
-   raw=r.read(128000);return json.loads(raw) if raw else {}
+   raw=r.read(128000)
+   print(f'GitHub API HTTP {r.status}: {method} /{path}')
+   return json.loads(raw) if raw else {}
  except urllib.error.HTTPError as e:
-  if e.code==404 and missing:return None
-  raise Stop('GitHub API HTTP '+str(e.code)+'; no response body or credential logged') from None
+  if e.code==404 and missing:
+   print(f'GitHub API HTTP 404: {method} /{path} (optional resource absent)');return None
+  raise Stop(failure_details(e,method,path)) from None
  except Exception:raise Stop('GitHub API unavailable; no automatic retry') from None
 
 def contexts():

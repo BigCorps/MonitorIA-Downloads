@@ -1,3 +1,4 @@
+import urllib.error
 import base64,contextlib,importlib.util,io,json,os,pathlib,tempfile,unittest
 from unittest.mock import patch
 s=importlib.util.spec_from_file_location('provision',pathlib.Path(__file__).with_name('android-signing-provision.py'));p=importlib.util.module_from_spec(s);s.loader.exec_module(p)
@@ -52,4 +53,22 @@ class Provision(unittest.TestCase):
    repo=path.removeprefix('repos/');return {'id':p.REPOS[repo],'full_name':repo,'private':repo=='BigCorps/MonitorIA'}
   with patch.object(p,'api',side_effect=api) as calls:self.assertEqual(p.contexts(),self.keys)
   self.assertTrue(all(len(c.args)==1 for c in calls.call_args_list))
+ def test_http_403_identifies_endpoint_and_permission_without_body(self):
+  path='repos/BigCorps/MonitorIA/environments/android-private-signing'
+  error=urllib.error.HTTPError('https://api.github.com/'+path,403,'Forbidden',{'X-Accepted-GitHub-Permissions':'actions=read'},io.BytesIO(b'{"message":"Resource not accessible by personal access token","private":"NEVER_PRINT"}'))
+  text=p.failure_details(error,'GET',path)
+  self.assertIn('GET /'+path,text);self.assertIn('actions=read',text);self.assertIn('resource not accessible',text);self.assertNotIn('NEVER_PRINT',text)
+ def test_plan_restriction_not_misclassified_as_missing_permission(self):
+  error=urllib.error.HTTPError('synthetic',403,'Forbidden',{},io.BytesIO(b'{"message":"Upgrade to GitHub Pro to use this feature"}'))
+  self.assertIn('plan upgrade required',p.failure_details(error,'GET','repos/BigCorps/MonitorIA/environments/android-private-signing'))
+ def test_arbitrary_headers_and_malformed_body_never_logged(self):
+  error=urllib.error.HTTPError('synthetic',403,'Forbidden',{'X-Accepted-GitHub-Permissions':'NEVER_PRINT\nSECRET'},io.BytesIO(b'PRIVATE_HTML'))
+  text=p.failure_details(error,'GET','repos/BigCorps/MonitorIA');self.assertNotIn('NEVER_PRINT',text);self.assertNotIn('PRIVATE_HTML',text)
+ def test_real_http_wrapper_preserves_safe_failure_diagnostic(self):
+  os.environ['PROVISIONING_TOKEN']='SYNTHETIC_PRIVATE_TOKEN'
+  error=urllib.error.HTTPError('synthetic',403,'Forbidden',{'X-Accepted-GitHub-Permissions':'environments=read'},io.BytesIO(b'{}'))
+  with patch.object(p.urllib.request,'build_opener') as opener:
+   opener.return_value.open.side_effect=error
+   with self.assertRaises(p.Stop) as caught:p.api('repositories/1315024254/environments/android-private-signing/secrets/public-key')
+  self.assertIn('environments=read',str(caught.exception));self.assertNotIn('SYNTHETIC_PRIVATE_TOKEN',str(caught.exception))
 if __name__=='__main__':unittest.main()
