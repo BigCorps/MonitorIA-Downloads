@@ -105,10 +105,7 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -memory 2048
           script: |
-            if ! python3 "$MONITORIA_SOURCE_DIR/android-agent/tools/downloads-preview.py" instrumented > "$RUNNER_TEMP/android-preview-private/instrumented-console.log" 2>&1; then
-              echo "::error::Android instrumentation failed; no APK will be published."
-              exit 1
-            fi
+            python3 "$MONITORIA_SOURCE_DIR/android-agent/tools/downloads-preview.py" instrumented > "$RUNNER_TEMP/android-preview-private/instrumented-console.log" 2>&1 || { echo "::error::Android instrumentation failed; no APK will be published."; exit 1; }
       - name: Sign with the existing persistent key and verify APK
         env:
           MONITORIA_ANDROID_SIGNING_STORE_B64: ${{ secrets.MONITORIA_ANDROID_SIGNING_STORE_B64 }}
