@@ -1,6 +1,11 @@
 name: MonitorIA Android SK210 preview
 on:
   workflow_dispatch:
+    inputs:
+      expected_workflow_sha:
+        description: Optional immutable SHA guard for the reviewed dispatcher
+        type: string
+        required: false
 permissions:
   contents: read
 concurrency:
@@ -22,6 +27,14 @@ jobs:
       MONITORIA_SOURCE_DIR: ${{ github.workspace }}/_monitoria_source
       EXPECTED_CERT_SHA256: ${{ vars.MONITORIA_ANDROID_CERT_SHA256 }}
     steps:
+      - name: Verify reviewed dispatcher SHA before secrets or checkout
+        env:
+          EXPECTED_WORKFLOW_SHA: ${{ inputs.expected_workflow_sha }}
+        run: |
+          if [ -n "$EXPECTED_WORKFLOW_SHA" ] && [ "$EXPECTED_WORKFLOW_SHA" != "$GITHUB_SHA" ]; then
+            echo "::error::Workflow SHA changed after authorization; no checkout or build."
+            exit 1
+          fi
       - name: Check access and persistent signing bindings before checkout or SDK
         env:
           MONITORIA_PRIVATE_SOURCE_TOKEN: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}

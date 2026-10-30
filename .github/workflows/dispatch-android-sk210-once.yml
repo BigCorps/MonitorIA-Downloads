@@ -4,7 +4,7 @@ on:
     branches: [main]
     paths: [.github/workflows/dispatch-android-sk210-once.yml]
 permissions:
-  contents: read
+  contents: write
   actions: write
 concurrency:
   group: dispatch-android-a0824038897b
@@ -42,8 +42,10 @@ jobs:
               if previous['total_count']:
                   print('Manual Android run already exists for this workflow SHA; no retry or duplicate.')
               else:
+                  # Atomic, durable claim: an existing ref fails closed, even if run history lags.
+                  api('git/refs','POST',{'ref':'refs/tags/ci-android-dispatch-a0824038897b','sha':sha})
                   assert api('git/ref/heads/main')['object']['sha']==sha, 'Main advanced: no dispatch'
-                  api('actions/workflows/'+workflow+'/dispatches','POST',{'ref':'main'})
+                  api('actions/workflows/'+workflow+'/dispatches','POST',{'ref':'main','inputs':{'expected_workflow_sha':sha}})
                   print('One reviewed workflow_dispatch requested. No signing/admin credentials accessed by dispatcher.')
           except Exception:
               print('Dispatcher stopped: check current main/source pin/API permissions. No automatic retry.',file=sys.stderr)
