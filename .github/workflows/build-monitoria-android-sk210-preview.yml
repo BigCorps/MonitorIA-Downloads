@@ -8,7 +8,7 @@ concurrency:
   cancel-in-progress: false
 env:
   # Reviewed private source. Changing it requires review; no mutable branch input.
-  MONITORIA_SOURCE_SHA: d8499a35cba89dee5d442ba36479904f2574e92c
+  MONITORIA_SOURCE_SHA: 72bbc9d02251f9734983bbd52cf3cb44c4ed9c71
   EXPECTED_VERSION_CODE: '1'
 jobs:
   android-preview:
@@ -114,7 +114,8 @@ jobs:
           MONITORIA_ANDROID_KEY_PASSWORD: ${{ secrets.MONITORIA_ANDROID_KEY_PASSWORD }}
         run: |
           if ! python3 "$MONITORIA_SOURCE_DIR/android-agent/tools/downloads-preview.py" sign > "$RUNNER_TEMP/android-preview-private/sign-console.log" 2>&1; then
-            echo "::error::Persistent signature, certificate or APK verification failed; no publication."
+            python3 "$MONITORIA_SOURCE_DIR/android-agent/tools/downloads-preview.py" status
+            echo "::error::Android signing gate failed; sanitized substage/counts above. No publication."
             exit 1
           fi
       - name: Publish only APK, manifest and checksums as separate non-default preview
