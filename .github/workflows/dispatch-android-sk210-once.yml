@@ -1,0 +1,53 @@
+name: Dispatch reviewed Android SK210 once
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/dispatch-android-sk210-once.yml]
+permissions:
+  contents: write
+  actions: write
+concurrency:
+  group: dispatch-android-a0824038897b
+  cancel-in-progress: false
+jobs:
+  dispatch:
+    if: github.repository == 'BigCorps/MonitorIA-Downloads' && contains(github.event.head_commit.message, 'android-reviewed-once-a0824038897b')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Dispatch the reviewed manual workflow once using this repository token
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import os,json,re,base64,subprocess,sys
+          repo='BigCorps/MonitorIA-Downloads'
+          workflow='build-monitoria-android-sk210-preview.yml'
+          expected='a0824038897b541f6ffa65ac5ed544c0335ebbb8'
+          def api(path,method='GET',body=None):
+              args=['gh','api','repos/'+repo+'/'+path,'--method',method]
+              if body is not None:args+=['--input','-']
+              p=subprocess.run(args,input=None if body is None else json.dumps(body).encode(),capture_output=True)
+              if p.returncode:raise RuntimeError('GitHub dispatcher API failed; no credential or response body logged')
+              return json.loads(p.stdout) if p.stdout.strip() else {}
+          try:
+              assert os.environ['GITHUB_REPOSITORY']==repo and os.environ['GITHUB_REF']=='refs/heads/main' and os.environ['GITHUB_EVENT_NAME']=='push'
+              sha=os.environ['GITHUB_SHA']
+              assert api('git/ref/heads/main')['object']['sha']==sha, 'Main advanced: no dispatch'
+              f=api('contents/.github/workflows/'+workflow+'?ref='+sha)
+              yaml=base64.b64decode(f['content']).decode()
+              assert re.search(r'^  MONITORIA_SOURCE_SHA: '+expected+r'$',yaml,re.M), 'Reviewed source pin mismatch'
+              path='actions/workflows/'+workflow+'/runs?event=workflow_dispatch&head_sha='+sha+'&per_page=10'
+              previous=api(path)
+              if previous['total_count']:
+                  print('Manual Android run already exists for this workflow SHA; no retry or duplicate.')
+              else:
+                  # Atomic, durable claim: an existing ref fails closed, even if run history lags.
+                  api('git/refs','POST',{'ref':'refs/tags/ci-android-dispatch-a0824038897b','sha':sha})
+                  assert api('git/ref/heads/main')['object']['sha']==sha, 'Main advanced: no dispatch'
+                  api('actions/workflows/'+workflow+'/dispatches','POST',{'ref':'main','inputs':{'expected_workflow_sha':sha}})
+                  print('One reviewed workflow_dispatch requested. No signing/admin credentials accessed by dispatcher.')
+          except Exception:
+              print('Dispatcher stopped: check current main/source pin/API permissions. No automatic retry.',file=sys.stderr)
+              sys.exit(1)
+          PY
