@@ -1,0 +1,189 @@
+name: Linux x64 PDV Integrações — build privado e release Draft
+
+# Public Downloads repository: only a maintainer-triggered workflow.
+# NEVER publish private MonitorIA sources, tokens, source maps or customer data.
+# No upload-artifact: artifacts on a public repository could be downloaded by anyone.
+# The only persisted binary is an unpublished GitHub Release Draft for maintainers.
+on:
+  workflow_dispatch:
+    inputs:
+      acknowledge_billing:
+        description: "Confirme que o GitHub Actions está com faturamento regularizado"
+        required: true
+        type: boolean
+        default: false
+      acknowledge_draft:
+        description: "Confirme armazenamento SOMENTE em Release Draft (não público)"
+        required: true
+        type: boolean
+        default: false
+      expected_dispatcher_sha:
+        description: "SHA exato da main do Downloads revisado (opcional, proteção adicional)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: monitoria-linux-pdv-private-draft
+  cancel-in-progress: false
+
+env:
+  # Source review: installer reset-failed fix from PR #115.
+  # Do not accept mutable branch names or unreviewed source inputs.
+  MONITORIA_SOURCE_SHA: 066f4d00f46e34f24a071bc07ac55ff55ddf729e
+  EXPECTED_PDV_BINARY_SHA256: 9e20e3b325464dc07148b3e2e69fc29f2b554f08f3024f0c52a63879f37831af
+
+jobs:
+  linux-pdv-draft:
+    if: github.repository == 'BigCorps/MonitorIA-Downloads' && github.ref == 'refs/heads/main' && inputs.acknowledge_billing && inputs.acknowledge_draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    permissions:
+      contents: write
+    steps:
+      - name: Confirm reviewed dispatcher and private-source read access
+        env:
+          SOURCE_TOKEN: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+          EXPECTED_DISPATCHER_SHA: ${{ inputs.expected_dispatcher_sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "$EXPECTED_DISPATCHER_SHA" ]; then
+            [[ "$EXPECTED_DISPATCHER_SHA" =~ ^[0-9a-f]{40}$ ]]
+            [ "$EXPECTED_DISPATCHER_SHA" = "$GITHUB_SHA" ] || {
+              echo "::error::Downloads workflow changed after review"; exit 1; }
+          fi
+          test -n "$SOURCE_TOKEN" || { echo "::error::Private source read token missing"; exit 1; }
+          python3 - <<'PY'
+          import json, os, urllib.request
+          req=urllib.request.Request(
+              'https://api.github.com/repos/BigCorps/MonitorIA',
+              headers={'Authorization':'Bearer '+os.environ['SOURCE_TOKEN'],
+                       'Accept':'application/vnd.github+json'})
+          try:
+              with urllib.request.urlopen(req, timeout=20) as r: data=json.load(r)
+          except Exception:
+              raise SystemExit('Private source access failed; no build performed')
+          if data.get('private') is not True or data.get('full_name')!='BigCorps/MonitorIA':
+              raise SystemExit('Expected private MonitorIA repository')
+          print('Authorized private repository verified. No source or token emitted.')
+          PY
+
+      - name: Checkout exact, immutable PRIVATE source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: BigCorps/MonitorIA
+          ref: ${{ env.MONITORIA_SOURCE_SHA }}
+          token: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+          path: private-src
+
+      - name: Validate immutable source checkout
+        working-directory: private-src
+        run: |
+          set -euo pipefail
+          [ "$(git rev-parse HEAD)" = "$MONITORIA_SOURCE_SHA" ]
+          git diff --quiet HEAD
+          test -f scripts/pdv/build-linux-diagnostic-pilot.sh
+          test -f scripts/pdv/tests/ubuntu-service-gate.sh
+          test -f packaging/linux/pdv/install.py
+          echo "Reviewed source matched. No code copied to Downloads repository."
+
+      - name: Node 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+
+      - name: Install pinned Bun 1.3.14
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
+            https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-linux-x64-baseline.zip \
+            -o "$RUNNER_TEMP/bun.zip"
+          echo "a063908ae08b7852ca10939bbdc6ceed3ddabce8fb9402dce83d65d73b36e6c7  $RUNNER_TEMP/bun.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/bun.zip" -d "$RUNNER_TEMP/bun"
+          echo "$RUNNER_TEMP/bun/bun-linux-x64-baseline" >> "$GITHUB_PATH"
+
+      - name: Install pinned localhost-only synthetic RTSP server
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
+            https://github.com/bluenviron/mediamtx/releases/download/v1.21.3/mediamtx_v1.21.3_linux_amd64.tar.gz \
+            -o "$RUNNER_TEMP/rtsp.tar.gz"
+          echo "0a2ea7eba96023631efa1bea7804823a9145b043b6646a8a05798d4ac24ed635  $RUNNER_TEMP/rtsp.tar.gz" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/synthetic-rtsp"
+          tar xzf "$RUNNER_TEMP/rtsp.tar.gz" -C "$RUNNER_TEMP/synthetic-rtsp" mediamtx
+          echo "MONITORIA_SYNTHETIC_RTSP_SERVER=$RUNNER_TEMP/synthetic-rtsp/mediamtx" >> "$GITHUB_ENV"
+
+      - name: Build and run Agent Linux integration tests
+        working-directory: private-src
+        run: |
+          set -euo pipefail
+          npm ci
+          python3 scripts/pdv/tests/test_linux_package.py
+          bash scripts/pdv/build-linux-diagnostic-pilot.sh
+
+      - name: Validate installed binary and rollback on disposable Ubuntu
+        working-directory: private-src
+        run: |
+          set -euo pipefail
+          sudo touch /run/monitoria-disposable-ci
+          sudo env MONITORIA_DISPOSABLE_SERVICE_TEST=1 bash scripts/pdv/tests/ubuntu-service-gate.sh \
+            "$PWD/dist/pdv-linux-preview/monitoria-agent-pdv-linux-x64-1.0.6-${MONITORIA_SOURCE_SHA:0:12}" \
+            "$PWD/dist/pdv-linux-cache/monitoria-agent-linux-x64-1.0.6.tar.gz"
+
+      - name: Validate source provenance and payload before Draft
+        working-directory: private-src
+        run: |
+          set -euo pipefail
+          cd dist/pdv-linux-preview
+          sha256sum --check SHA256SUMS.txt
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, tarfile
+          out=pathlib.Path('.')
+          sha=os.environ['MONITORIA_SOURCE_SHA']
+          archive=out/('monitoria-agent-pdv-linux-x64-1.0.6-'+sha[:12]+'.tar.gz')
+          m=json.loads((out/'pilot-manifest.json').read_text())
+          assert m['sourceCommit']==sha
+          assert m['variant']=='pdv-diagnostic-pilot'
+          assert m['architecture']=='linux-x64'
+          assert m['automaticActivation'] is False
+          assert m['productionReconciliationReady'] is False
+          assert m['physicalPilotValidated'] is False
+          assert m['files']['monitoria-agent']['sha256']==os.environ['EXPECTED_PDV_BINARY_SHA256']
+          assert archive.stat().st_size < 200*1024*1024
+          with tarfile.open(archive,'r:gz') as t:
+              names=t.getnames()
+              assert len(names)<250
+              for name in names:
+                  parts=pathlib.PurePosixPath(name).parts
+                  assert len(parts)>0 and parts[0]==archive.name.removesuffix('.tar.gz')
+                  assert not any(x in ('.git','.env','node_modules','.npmrc','.ssh') for x in parts)
+                  assert not any('token' in x.lower() or 'credential' in x.lower() for x in parts)
+          actual=hashlib.file_digest(archive.open('rb'),'sha256').hexdigest()
+          assert actual in (out/'SHA256SUMS.txt').read_text()
+          print('Binary SHA and manifest verified; distribution remains unsigned / diagnostic only.')
+          PY
+
+      - name: Create UNPUBLISHED release Draft in Downloads (no public workflow artifact)
+        working-directory: private-src/dist/pdv-linux-preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="linux-pdv-private-draft-${MONITORIA_SOURCE_SHA:0:12}-${GITHUB_RUN_ID}"
+          archive="monitoria-agent-pdv-linux-x64-1.0.6-${MONITORIA_SOURCE_SHA:0:12}.tar.gz"
+          [ -f "$archive" ] && [ -f SHA256SUMS.txt ] && [ -f pilot-manifest.json ]
+          if gh release view "$tag" --repo BigCorps/MonitorIA-Downloads >/dev/null 2>&1; then
+            echo "::error::Release tag already exists"; exit 1
+          fi
+          gh release create "$tag" "$archive" SHA256SUMS.txt pilot-manifest.json \
+            --repo BigCorps/MonitorIA-Downloads --target "$GITHUB_SHA" \
+            --draft --prerelease \
+            --title "MonitorIA Linux Integrações 1.0.6 — DRAFT / NÃO DISTRIBUIR" \
+            --notes "Draft restrito a mantenedores. Código privado BigCorps/MonitorIA fixado em ${MONITORIA_SOURCE_SHA}. Piloto diagnóstico Linux x64, sem assinatura, sem conferência fiscal homologada. NÃO altera agent-v1.0.6, downloads oficiais, câmera, VM ou produção. Revisar hashes e relatório antes de qualquer publicação."
+          gh release view "$tag" --repo BigCorps/MonitorIA-Downloads --json isDraft,isPrerelease,tagName \
+            --jq 'select(.isDraft == true and .isPrerelease == true) | .tagName' | grep -Fx "$tag"
+          echo "Release Draft guardado em MonitorIA-Downloads, ainda NÃO público."
