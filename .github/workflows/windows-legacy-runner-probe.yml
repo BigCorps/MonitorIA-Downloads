@@ -1,0 +1,26 @@
+name: Windows runner probe (MonitorIA legacy compatibility)
+on:
+  push:
+    branches:
+      - ci/windows-legacy-compat-check
+    paths:
+      - .github/workflows/windows-legacy-runner-probe.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-runner:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - name: Confirm Windows runner and PowerShell
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $IsWindows) { throw 'Runner is not Windows.' }
+          $node = (Get-Command node -ErrorAction Stop).Source
+          Write-Host "Windows runner ready."
+          Write-Host "Node.js executable available: $([bool]$node)"
+          Write-Host "No private MonitorIA source was accessed."
