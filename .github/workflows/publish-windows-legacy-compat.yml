@@ -1,0 +1,261 @@
+name: Publish SIGNED MonitorIA 1.0.6 Windows legacy compatibility (never Store)
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_windows_only:
+        description: 'Confirmar publicacao assinada APENAS Windows 24/7 (nao Store, nao Linux)'
+        required: true
+        type: boolean
+        default: false
+      confirm_immutable_release:
+        description: 'Confirmar nova tag imutavel agent-v1.0.6-windows-compat1'
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: monitoria-windows-legacy-signed-release
+  cancel-in-progress: false
+
+env:
+  MONITORIA_SOURCE_SHA: 343fff3c069c5853a3e3a26ea75a34c393c1e1ad
+
+jobs:
+  windows-signed-release:
+    if: github.repository == 'BigCorps/MonitorIA-Downloads' && github.ref == 'refs/heads/main' && inputs.confirm_windows_only && inputs.confirm_immutable_release
+    runs-on: windows-latest
+    timeout-minutes: 85
+    steps:
+      - name: Confirm required secrets exist (never print their values)
+        shell: pwsh
+        env:
+          PRIVATE_TOKEN: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+          ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
+          ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
+          ESIGNER_CREDENTIAL_ID: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
+          ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
+        run: |
+          foreach ($name in @('PRIVATE_TOKEN','ESIGNER_USERNAME','ESIGNER_PASSWORD','ESIGNER_CREDENTIAL_ID','ESIGNER_TOTP_SECRET')) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { throw "Required secret absent: $name" }
+          }
+          Write-Host 'Secrets present; values not printed.'
+
+      - name: Verify immutable release does not already exist
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view agent-v1.0.6-windows-compat1 --repo BigCorps/MonitorIA-Downloads *> $null
+          if ($LASTEXITCODE -eq 0) { throw 'Release tag already exists; immutable assets must not be overwritten.' }
+
+      - name: Checkout reviewed PRIVATE source without retaining credentials
+        uses: actions/checkout@v5
+        with:
+          repository: BigCorps/MonitorIA
+          ref: ${{ env.MONITORIA_SOURCE_SHA }}
+          token: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify private commit exactly matches reviewed source
+        shell: pwsh
+        run: |
+          if ((git rev-parse HEAD).Trim() -ne $env:MONITORIA_SOURCE_SHA) { throw 'Source pin mismatch.' }
+          if (-not (Test-Path 'installer/monitoria-service-node.xml')) { throw 'Legacy service code missing.' }
+
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - name: Compile and regression-check the same Agent 1.0.6 source
+        shell: pwsh
+        run: |
+          npm ci
+          if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
+          npx tsc --noEmit -p agent/tsconfig.json
+          if ($LASTEXITCODE -ne 0) { throw 'TypeScript failed' }
+          node --import tsx --test test/agent-0106-windows-legacy-auto.test.ts
+          if ($LASTEXITCODE -ne 0) { throw 'Windows compatibility tests failed' }
+          New-Item -ItemType Directory -Force -Path agent/dist,build,build/ffmpeg | Out-Null
+          & .\node_modules\.bin\esbuild.cmd agent/src/index-v106.ts --bundle --platform=node --format=esm --target=node22 --outfile=agent/dist/monitoria-agent-node.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'ESM bundling failed' }
+          $result = & node agent/dist/monitoria-agent-node.mjs self-test 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0 -or $result -notmatch 'v1\.0\.6 aprovado') { throw "Node self-test failed: $result" }
+
+      - name: Download and verify official Node.js 22 Windows runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (& node -p 'process.version').Trim()
+          if ($version -notmatch '^v22\.') { throw 'Node 22 required' }
+          $filename = "node-$version-win-x64.zip"
+          $url = "https://nodejs.org/dist/$version"
+          Invoke-WebRequest "$url/SHASUMS256.txt" -OutFile "$env:RUNNER_TEMP\SHASUMS256.txt"
+          $line = Get-Content "$env:RUNNER_TEMP\SHASUMS256.txt" | Where-Object { $_ -match "^[a-fA-F0-9]{64}  $([regex]::Escape($filename))$" } | Select-Object -First 1
+          if (-not $line) { throw 'Official Node checksum not found' }
+          $expected = ($line -split '\s+')[0].ToLowerInvariant()
+          Invoke-WebRequest "$url/$filename" -OutFile "$env:RUNNER_TEMP\$filename"
+          $actual = (Get-FileHash "$env:RUNNER_TEMP\$filename" -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw 'Node official archive checksum mismatch' }
+          Expand-Archive "$env:RUNNER_TEMP\$filename" -DestinationPath "$env:RUNNER_TEMP\node-dist"
+          $source = "$env:RUNNER_TEMP\node-dist\node-$version-win-x64\node.exe"
+          if ((Get-AuthenticodeSignature $source).Status -ne 'Valid') { throw 'Original Node Authenticode invalid' }
+          Copy-Item $source build/monitoria-agent-node.exe
+          $check = & build/monitoria-agent-node.exe agent/dist/monitoria-agent-node.mjs self-test 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0 -or $check -notmatch 'v1\.0\.6 aprovado') { throw 'Packaged Node runtime rejected' }
+
+      - name: Obtain signed production 1.0.6 binaries without rebuilding Bun or Store
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          gh release download agent-v1.0.6 --repo BigCorps/MonitorIA-Downloads --pattern MonitorIA-Setup.exe --output "$env:RUNNER_TEMP\v106-setup.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'Official 1.0.6 setup unavailable' }
+          if ((Get-AuthenticodeSignature "$env:RUNNER_TEMP\v106-setup.exe").Status -ne 'Valid') { throw 'Production installer not signed' }
+          $p = Start-Process "$env:RUNNER_TEMP\v106-setup.exe" -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Original setup failed: $($p.ExitCode)" }
+          $root = Join-Path $env:ProgramFiles 'MonitorIA'
+          foreach ($file in @('monitoria-agent.exe','monitoria-dpapi.exe','monitoria-service.exe','monitoria-tray.exe')) {
+            $source = Join-Path $root $file
+            if (-not (Test-Path $source)) { throw "Missing official binary $file" }
+            if ((Get-AuthenticodeSignature $source).Status -ne 'Valid') { throw "Unsigned original binary $file" }
+            $target = if ($file -eq 'monitoria-agent.exe') { 'agent/dist/monitoria-agent.exe' } else { "build/$file" }
+            Copy-Item $source $target -Force
+          }
+          Copy-Item "$root\ffmpeg\*" build/ffmpeg -Recurse -Force
+          foreach ($file in @('ffmpeg.exe','ffprobe.exe','LICENSE.txt','FFMPEG-ORIGEM.txt')) {
+            if (-not (Test-Path "build/ffmpeg/$file")) { throw "FFmpeg file missing: $file" }
+          }
+          $data = Join-Path $env:ProgramData 'MonitorIA'
+          New-Item -ItemType Directory -Force -Path $data | Out-Null
+          Set-Content (Join-Path $data 'legacy-compat-upgrade-sentinel.txt') 'keep-this-agent-state'
+          "AGENT_ROOT=$root" | Out-File -Append $env:GITHUB_ENV
+          "AGENT_DATA=$data" | Out-File -Append $env:GITHUB_ENV
+
+      - name: Locate Inno Setup
+        id: inno
+        shell: pwsh
+        run: |
+          $paths = @('C:\Program Files (x86)\Inno Setup 6\ISCC.exe','C:\Program Files\Inno Setup 6\ISCC.exe')
+          $iscc = $paths | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup -y --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'Inno Setup unavailable' }
+            $iscc = $paths | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $iscc) { throw 'ISCC not found' }
+          "path=$iscc" | Out-File -Append $env:GITHUB_OUTPUT
+
+      - name: Exercise old CPU path via forced Node Windows service (CI only)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & "${{ steps.inno.outputs.path }}" '/DAppVersion=1.0.6' '/DWindowsLegacyCompat=1' '/DForceLegacyCpu=1' installer/monitoria-service-v103.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Forced old-CPU installer compilation failed' }
+          $p = Start-Process (Resolve-Path dist/MonitorIA-Setup.exe).Path -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Node path install failed: $($p.ExitCode)" }
+          $xml = Get-Content (Join-Path $env:AGENT_ROOT 'monitoria-service.xml') -Raw
+          if ($xml -notmatch 'monitoria-agent-node\.exe') { throw 'Legacy service did not select Node' }
+          if ((Get-Service MonitorIAAgent).Status -ne 'Running') { throw 'Node service not running' }
+          $status = & "$env:AGENT_ROOT\monitoria-agent-node.exe" "$env:AGENT_ROOT\monitoria-agent-node.mjs" status 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0 -or $status -notmatch 'MonitorIA Agent') { throw "Node IPC unavailable: $status" }
+          if ((Get-Content (Join-Path $env:AGENT_DATA 'legacy-compat-upgrade-sentinel.txt') -Raw).Trim() -ne 'keep-this-agent-state') { throw 'ProgramData lost' }
+          Remove-Item dist/MonitorIA-Setup.exe -Force
+
+      - name: Exercise modern CPU upgrade, preserve data and ensure Bun service remains standard
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & "${{ steps.inno.outputs.path }}" '/DAppVersion=1.0.6' '/DWindowsLegacyCompat=1' installer/monitoria-service-v103.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Public setup compilation failed' }
+          $installer = (Resolve-Path dist/MonitorIA-Setup.exe).Path
+          $p = Start-Process $installer -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Modern upgrade failed: $($p.ExitCode)" }
+          $xml = Get-Content (Join-Path $env:AGENT_ROOT 'monitoria-service.xml') -Raw
+          if ($xml -notmatch '<executable>%BASE%\\monitoria-agent\.exe</executable>') { throw 'Modern Windows did not select original Bun' }
+          if ((Get-Service MonitorIAAgent).Status -ne 'Running') { throw 'Bun service not running' }
+          $status = & "$env:AGENT_ROOT\monitoria-agent.exe" status 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0 -or $status -notmatch 'MonitorIA Agent') { throw "Bun IPC unavailable: $status" }
+          if ((Get-Content (Join-Path $env:AGENT_DATA 'legacy-compat-upgrade-sentinel.txt') -Raw).Trim() -ne 'keep-this-agent-state') { throw 'ProgramData lost during upgrade' }
+          if (-not (Test-Path (Join-Path $env:AGENT_ROOT 'monitoria-agent-node.mjs'))) { throw 'Legacy payload not installed' }
+          Write-Host 'Both CPU paths passed. Store build was not invoked.'
+
+      - name: Prepare signed Node helper and signing tools for Windows-only release
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path sign-node | Out-Null
+          Copy-Item build/monitoria-agent-node.exe sign-node/monitoria-agent-node.exe
+
+      - name: Sign Windows Node helper with existing BigCorps certificate
+        uses: sslcom/esigner-codesign@v1.3.2
+        with:
+          command: batch_sign
+          username: ${{ secrets.ESIGNER_USERNAME }}
+          password: ${{ secrets.ESIGNER_PASSWORD }}
+          credential_id: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
+          totp_secret: ${{ secrets.ESIGNER_TOTP_SECRET }}
+          dir_path: ${{ github.workspace }}\sign-node
+          output_path: ${{ github.workspace }}\signed-node
+          malware_block: true
+          environment_name: PROD
+
+      - name: Sign Windows-only Inno setup and uninstaller for release
+        shell: pwsh
+        env:
+          ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
+          ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
+          ESIGNER_CREDENTIAL_ID: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
+          ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Copy-Item signed-node/monitoria-agent-node.exe build/monitoria-agent-node.exe -Force
+          $sig = Get-AuthenticodeSignature build/monitoria-agent-node.exe
+          if ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate) { throw 'Signed Node runtime invalid' }
+          $wrapper = Join-Path $env:GITHUB_WORKSPACE 'scripts/sign-inno-authenticode.ps1'
+          if (-not (Test-Path $wrapper)) { throw 'Official Inno signing helper missing' }
+          if ([string]::IsNullOrWhiteSpace($env:CODE_SIGN_TOOL_PATH) -and [string]::IsNullOrWhiteSpace($env:CODESIGNTOOL_PATH)) { throw 'SSL.com signer unavailable' }
+          $pwsh = (Get-Command pwsh.exe).Source
+          $signTool = 'monitoria=$q' + $pwsh + '$q -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $q' + $wrapper + '$q $f'
+          $env:MONITORIA_SIGN_CONTEXT = 'windows-247-legacy-106'
+          Remove-Item dist/MonitorIA-Setup.exe -Force
+          & "${{ steps.inno.outputs.path }}" '/DAppVersion=1.0.6' '/DWindowsLegacyCompat=1' '/DSignCommand=1' "/S$signTool" installer/monitoria-service-v103.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Signed Inno setup compilation failed' }
+          $sig = Get-AuthenticodeSignature dist/MonitorIA-Setup.exe
+          if ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate) { throw 'Final setup signature invalid' }
+          $baseline = Get-AuthenticodeSignature "$env:RUNNER_TEMP\v106-setup.exe"
+          if ($sig.SignerCertificate.Subject -ne $baseline.SignerCertificate.Subject) { throw 'Signer changed from production' }
+
+      - name: Manifest and immutable SHA256 checksum
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash dist/MonitorIA-Setup.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  MonitorIA-Setup.exe" | Set-Content dist/SHA256SUMS.txt -Encoding ascii
+          [ordered]@{version='1.0.6'; channel='windows-247'; compatibility='Node22 for CPUs without AVX'; publicSigned=("$env:GITHUB_EVENT_NAME" -eq 'push'); storeChanged=$false; sourceCommit=$env:GITHUB_SHA; sha256=$hash} | ConvertTo-Json | Set-Content dist/manifest.json -Encoding utf8
+          Write-Host "SHA256: $hash"
+
+
+      - name: Publish signed Windows-only release to Downloads, never overwrite agent-v1.0.6
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) { throw 'Downloads publication token missing' }
+          $repo = 'BigCorps/MonitorIA-Downloads'
+          $tag = 'agent-v1.0.6-windows-compat1'
+          gh release view $tag --repo $repo *> $null
+          if ($LASTEXITCODE -eq 0) { throw 'Immutable Windows compatibility release already exists; refusing overwrite' }
+          gh release create $tag dist/MonitorIA-Setup.exe dist/SHA256SUMS.txt dist/manifest.json --repo $repo --title 'MonitorIA 1.0.6 Windows 24/7 - Legacy CPU compatibility' --notes 'Windows-only signed compatibility refresh. Automatic Bun for AVX machines and Node.js 22 for older CPUs. Microsoft Store, Linux and Android unchanged.'
+          if ($LASTEXITCODE -ne 0) { throw 'Windows release publication failed' }
+      - name: Confirm signed release assets were published
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $release = gh release view agent-v1.0.6-windows-compat1 --repo BigCorps/MonitorIA-Downloads --json tagName,isDraft,assets | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $release.isDraft) { throw 'Release missing or still draft' }
+          if (-not ($release.assets | Where-Object { $_.name -eq 'MonitorIA-Setup.exe' })) { throw 'Setup asset missing' }
+          Write-Host 'Signed Windows-only compatibility release verified. Site URLs NOT changed.'
