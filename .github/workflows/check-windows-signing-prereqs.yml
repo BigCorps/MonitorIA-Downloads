@@ -1,0 +1,35 @@
+name: Check Windows signing prerequisites (no build)
+on:
+  push:
+    branches:
+      - ci/windows-legacy-compat-check
+    paths:
+      - .github/workflows/check-windows-signing-prereqs.yml
+
+permissions:
+  contents: read
+
+jobs:
+  signing-prerequisites:
+    if: github.repository == 'BigCorps/MonitorIA-Downloads'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Check existence only, never print secret values
+        env:
+          SIGN_USER: ${{ secrets.ESIGNER_USERNAME }}
+          SIGN_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
+          SIGN_CREDENTIAL: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
+          SIGN_TOTP: ${{ secrets.ESIGNER_TOTP_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in SIGN_USER SIGN_PASSWORD SIGN_CREDENTIAL SIGN_TOTP; do
+            if [ -z "${!name:-}" ]; then
+              echo "Missing required codesigning secret: $name"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          echo "Required SSL.com signing secrets are configured. No signing requested or performed."
