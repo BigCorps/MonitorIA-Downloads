@@ -159,7 +159,24 @@ jobs:
           if ($p.ExitCode -ne 0) { throw "Modern upgrade failed: $($p.ExitCode)" }
           $xml = Get-Content (Join-Path $env:AGENT_ROOT 'monitoria-service.xml') -Raw
           if ($xml -notmatch '<executable>%BASE%\\monitoria-agent\.exe</executable>') { throw 'Modern Windows did not select original Bun' }
-          if ((Get-Service MonitorIAAgent).Status -ne 'Running') { throw 'Bun service not running' }
+          $agentSelfTest = & "$env:AGENT_ROOT\monitoria-agent.exe" self-test 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "Original signed Bun EXE self-test failed: $agentSelfTest" }
+          $running = $false
+          for ($i = 0; $i -lt 20; $i++) {
+            if ((Get-Service MonitorIAAgent).Status -eq 'Running') { $running = $true; break }
+            Start-Sleep -Seconds 2
+          }
+          if (-not $running) {
+            Write-Host 'Service did not return to RUNNING after modern CPU upgrade.'
+            & sc.exe queryex MonitorIAAgent 2>&1 | Out-Host
+            & sc.exe qc MonitorIAAgent 2>&1 | Out-Host
+            $xmlCheck = Get-Content (Join-Path $env:AGENT_ROOT 'monitoria-service.xml') -Raw
+            Write-Host "WinSW XML correctly selected Bun: $([bool]($xmlCheck -match 'monitoria-agent\.exe'))"
+            $logDir = Join-Path $env:AGENT_ROOT ''
+            Get-ChildItem $logDir -File -Filter 'monitoria-service.*' -ErrorAction SilentlyContinue |
+              Select-Object Name,Length | Format-Table | Out-Host
+            throw 'Bun service not running after retry window'
+          }
           $status = & "$env:AGENT_ROOT\monitoria-agent.exe" status 2>&1 | Out-String
           if ($LASTEXITCODE -ne 0 -or $status -notmatch 'MonitorIA Agent') { throw "Bun IPC unavailable: $status" }
           if ((Get-Content (Join-Path $env:AGENT_DATA 'legacy-compat-upgrade-sentinel.txt') -Raw).Trim() -ne 'keep-this-agent-state') { throw 'ProgramData lost during upgrade' }
