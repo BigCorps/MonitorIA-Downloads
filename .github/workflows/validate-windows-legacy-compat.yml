@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  MONITORIA_SOURCE_SHA: 343fff3c069c5853a3e3a26ea75a34c393c1e1ad
+  MONITORIA_SOURCE_SHA: 9e5f4155bd47bd81d398f4f48df8d20b9c21bb41
 
 jobs:
   windows-compat:
