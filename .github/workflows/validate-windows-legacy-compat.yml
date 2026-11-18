@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  MONITORIA_SOURCE_SHA: 9e5f4155bd47bd81d398f4f48df8d20b9c21bb41
+  MONITORIA_SOURCE_SHA: 803c74031beceb46e04700c361361221c737c6cf
 
 jobs:
   windows-compat:
@@ -59,7 +59,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
           npx tsc --noEmit -p agent/tsconfig.json
           if ($LASTEXITCODE -ne 0) { throw 'TypeScript failed' }
-          node --import tsx --test test/agent-0106-windows-legacy-auto.test.ts
+          node --import tsx --test test/agent-0106-windows-legacy-auto.test.ts test/agent-0105-site-github-rollout.test.ts test/agent-0104-download-gate.test.ts
           if ($LASTEXITCODE -ne 0) { throw 'Windows compatibility tests failed' }
           New-Item -ItemType Directory -Force -Path agent/dist,build,build/ffmpeg | Out-Null
           & .\node_modules\.bin\esbuild.cmd agent/src/index-v106.ts --bundle --platform=node --format=esm --target=node22 --outfile=agent/dist/monitoria-agent-node.mjs
