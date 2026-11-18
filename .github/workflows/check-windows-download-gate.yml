@@ -1,0 +1,36 @@
+name: Validate MonitorIA Windows-only release URL gate (private source, no artifact)
+on:
+  push:
+    branches: [ci/windows-legacy-compat-check]
+    paths:
+      - .github/workflows/check-windows-download-gate.yml
+permissions:
+  contents: read
+jobs:
+  site-gate:
+    if: github.repository == 'BigCorps/MonitorIA-Downloads'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact private MonitorIA website source
+        uses: actions/checkout@v5
+        with:
+          repository: BigCorps/MonitorIA
+          ref: 83be155b62e2349c7131c0fe39d922e760e47454
+          token: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Check pinned commit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = 83be155b62e2349c7131c0fe39d922e760e47454
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Test current and Windows-only download gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          node --import tsx --test test/agent-0106-windows-compat-download-gate.test.ts test/agent-0105-site-github-rollout.test.ts test/agent-0104-download-gate.test.ts
+          echo 'Site gate validated. No production or Store change.'
