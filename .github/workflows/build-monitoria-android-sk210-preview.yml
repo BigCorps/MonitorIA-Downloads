@@ -109,14 +109,14 @@ jobs:
           data=zlib.compress(('GATE='+current+'\n').encode()+log.read_bytes()[-32000:],9)
           aes=os.urandom(32);iv=os.urandom(16)
           pub="""-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsSkZjR1srmcJ4LHVya5j
-QoFHn5akgVhGseU9JLksabJKImzRk7TdrpcHWPPAcWKlks209x5I68fV1FacBwhj
-h/cctzfCssygP0YbP+QZQo9+ESq7eEO3VzNgbfYQrHILbijLJeflzyeiDh3rnWeq
-36tOAd8/QjbzUTqifYPuUyY3m55MwAloYHADWzP6v8mDVTg7hoyjxvGr8o57o7On
-Htg5nNyMou7SyHppdU8MZ+MAGtcycFEgAkLh9cxJ4+RqEllptCMPArpGAn0jN7Eh
-rIALfauO3/5BghOfbahy5rH4GrelZExwAocLflgHD12/kewiawFfBvfOxGABkFMv
-1wIDAQAB
------END PUBLIC KEY-----"""
+          MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsSkZjR1srmcJ4LHVya5j
+          QoFHn5akgVhGseU9JLksabJKImzRk7TdrpcHWPPAcWKlks209x5I68fV1FacBwhj
+          h/cctzfCssygP0YbP+QZQo9+ESq7eEO3VzNgbfYQrHILbijLJeflzyeiDh3rnWeq
+          36tOAd8/QjbzUTqifYPuUyY3m55MwAloYHADWzP6v8mDVTg7hoyjxvGr8o57o7On
+          Htg5nNyMou7SyHppdU8MZ+MAGtcycFEgAkLh9cxJ4+RqEllptCMPArpGAn0jN7Eh
+          rIALfauO3/5BghOfbahy5rH4GrelZExwAocLflgHD12/kewiawFfBvfOxGABkFMv
+          1wIDAQAB
+          -----END PUBLIC KEY-----"""
           with tempfile.TemporaryDirectory() as tmp:
               tmp=pathlib.Path(tmp)
               (tmp/'public.pem').write_text(pub)
