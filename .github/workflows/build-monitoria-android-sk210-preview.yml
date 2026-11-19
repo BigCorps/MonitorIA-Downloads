@@ -95,6 +95,41 @@ jobs:
         run: |
           if ! python3 "$MONITORIA_SOURCE_DIR/android-agent/tools/downloads-preview.py" validate > "$RUNNER_TEMP/android-preview-private/validate-console.log" 2>&1; then
             echo "::error::Android validation failed; private diagnostics are not uploaded."
+          # Public runner logs must never reveal private source/test output.
+          # Transport only encrypted diagnostics, with a public RSA key. No
+          # signing credential is present in the compile step.
+          python3 - <<'PY'
+          import os, pathlib, base64, tempfile, subprocess, zlib, hmac, hashlib, json
+          directory=pathlib.Path(os.environ['RUNNER_TEMP'])/'android-preview-private'
+          order=['preview-driver-tests','dependencies','node-interop','android-gates','licenses','postgres','postgres-pdv']
+          current=next((name for name in reversed(order) if (directory/(name+'.log')).is_file()),'unknown')
+          print('::notice::Android validation gate: '+current)
+          log=directory/(current+'.log')
+          if not log.is_file():raise SystemExit()
+          data=zlib.compress(('GATE='+current+'\n').encode()+log.read_bytes()[-32000:],9)
+          aes=os.urandom(32);iv=os.urandom(16)
+          pub="""-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsSkZjR1srmcJ4LHVya5j
+QoFHn5akgVhGseU9JLksabJKImzRk7TdrpcHWPPAcWKlks209x5I68fV1FacBwhj
+h/cctzfCssygP0YbP+QZQo9+ESq7eEO3VzNgbfYQrHILbijLJeflzyeiDh3rnWeq
+36tOAd8/QjbzUTqifYPuUyY3m55MwAloYHADWzP6v8mDVTg7hoyjxvGr8o57o7On
+Htg5nNyMou7SyHppdU8MZ+MAGtcycFEgAkLh9cxJ4+RqEllptCMPArpGAn0jN7Eh
+rIALfauO3/5BghOfbahy5rH4GrelZExwAocLflgHD12/kewiawFfBvfOxGABkFMv
+1wIDAQAB
+-----END PUBLIC KEY-----"""
+          with tempfile.TemporaryDirectory() as tmp:
+              tmp=pathlib.Path(tmp)
+              (tmp/'public.pem').write_text(pub)
+              (tmp/'key.bin').write_bytes(aes)
+              (tmp/'source.bin').write_bytes(data)
+              subprocess.run(['openssl','enc','-aes-256-ctr','-K',aes.hex(),'-iv',iv.hex(),'-in',str(tmp/'source.bin'),'-out',str(tmp/'encrypted.bin')],check=True,stdout=subprocess.DEVNULL)
+              subprocess.run(['openssl','pkeyutl','-encrypt','-pubin','-inkey',str(tmp/'public.pem'),'-pkeyopt','rsa_padding_mode:oaep','-pkeyopt','rsa_oaep_md:sha256','-in',str(tmp/'key.bin'),'-out',str(tmp/'wrapped.bin')],check=True,stdout=subprocess.DEVNULL)
+              encrypted=(tmp/'encrypted.bin').read_bytes()
+              report={'scheme':'RSA-OAEP-SHA256+AES-256-CTR+HMAC-SHA256+zlib','key':base64.b64encode((tmp/'wrapped.bin').read_bytes()).decode(),'iv':base64.b64encode(iv).decode(),'mac':hmac.new(aes,iv+encrypted,hashlib.sha256).hexdigest(),'data':base64.b64encode(encrypted).decode()}
+              print('ENCRYPTED_ANDROID_GATE_BEGIN')
+              print(json.dumps(report,separators=(',',':')))
+              print('ENCRYPTED_ANDROID_GATE_END')
+          PY
             exit 1
           fi
       - name: Reserve disposable runner disk and enable KVM
