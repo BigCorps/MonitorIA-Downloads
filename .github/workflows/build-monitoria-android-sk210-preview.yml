@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 env:
   # Reviewed private source. Changing it requires review; no mutable branch input.
-  MONITORIA_SOURCE_SHA: 02eafab93b1c4ca32569a621587043d944d2cc51
+  MONITORIA_SOURCE_SHA: 0eaa4db15ea9a459241cf10ce1e7b8929c2b92c3
   EXPECTED_VERSION_CODE: '7'
 jobs:
   android-preview:
