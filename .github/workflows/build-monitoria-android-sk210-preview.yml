@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 env:
   # Reviewed private source. Changing it requires review; no mutable branch input.
-  MONITORIA_SOURCE_SHA: 34e4bbff9c20b63e76c45e70e893f7f6ba595642
+  MONITORIA_SOURCE_SHA: 875d378e0ef5969417eb42c40cdbac4cd69416d7
   EXPECTED_VERSION_CODE: '8'
 jobs:
   android-preview:
@@ -107,6 +107,29 @@ jobs:
           print('::notice::Android validation gate: '+current)
           log=directory/(current+'.log')
           if not log.is_file():raise SystemExit()
+          # Deliberately minimal public diagnostic: count/category/line only,
+          # NEVER private filenames, source lines, exception text, URLs or keys.
+          import re
+          evidence=log.read_text(errors='replace')
+          compile_spots=[]
+          for row in evidence.splitlines():
+              if not row.lstrip().startswith(('e:','error:')):continue
+              match=re.search(r'\\.kt:(\\d+):(\\d+)',row)
+              if match:
+                  kind='other'
+                  for word,label in [('unresolved reference','unresolved'),('type mismatch','type'),('expecting','syntax'),
+                                     ('cannot infer','inference'),('overload resolution','overload'),
+                                     ('none of the following candidates','overload')]:
+                      if word in row.lower():kind=label;break
+                  compile_spots.append((int(match.group(1)),kind))
+          if current=='android-gates':
+              for line,kind in compile_spots[:5]:
+                  print('::notice::Android compiler diagnostic line='+str(line)+' category='+kind)
+              test_names=['handshakeAndPublishEmitPhasesWithoutSecrets','failureGuidanceDistinguishesStagesWithoutExposingRawErrors']
+              for name in test_names:
+                  if re.search(re.escape(name)+r'.*FAILED',evidence):
+                      print('::notice::Synthetic RTMP regression failed='+name)
+              print('::notice::Android gate diagnostic count='+str(len(compile_spots)))
           data=zlib.compress(('GATE='+current+'\n').encode()+log.read_bytes()[-32000:],9)
           aes=os.urandom(32);iv=os.urandom(16)
           pub="""-----BEGIN PUBLIC KEY-----
