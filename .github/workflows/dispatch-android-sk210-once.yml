@@ -8,11 +8,11 @@ permissions:
   contents: write
   actions: write
 concurrency:
-  group: dispatch-android-34e4bbff9c20b63e
+  group: dispatch-android-875d378e0ef59694
   cancel-in-progress: false
 jobs:
   dispatch:
-    if: github.repository == 'BigCorps/MonitorIA-Downloads' && contains(github.event.head_commit.message, 'android-reviewed-once-34e4bbff9c20b63e')
+    if: github.repository == 'BigCorps/MonitorIA-Downloads' && contains(github.event.head_commit.message, 'android-reviewed-once-875d378e0ef59694')
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     steps:
@@ -24,7 +24,7 @@ jobs:
           import os,json,re,base64,subprocess,sys
           repo='BigCorps/MonitorIA-Downloads'
           workflow='build-monitoria-android-sk210-preview.yml'
-          expected='34e4bbff9c20b63e76c45e70e893f7f6ba595642'
+          expected='875d378e0ef5969417eb42c40cdbac4cd69416d7'
           def api(path,method='GET',body=None):
               args=['gh','api','repos/'+repo+'/'+path,'--method',method]
               if body is not None:args+=['--input','-']
@@ -44,7 +44,7 @@ jobs:
                   print('Manual Android run already exists for this workflow SHA; no retry or duplicate.')
               else:
                   # Atomic, durable claim: an existing ref fails closed, even if run history lags.
-                  api('git/refs','POST',{'ref':'refs/tags/ci-android-dispatch-34e4bbff9c20b63e','sha':sha})
+                  api('git/refs','POST',{'ref':'refs/tags/ci-android-dispatch-875d378e0ef59694','sha':sha})
                   assert api('git/ref/heads/main')['object']['sha']==sha, 'Main advanced: no dispatch'
                   api('actions/workflows/'+workflow+'/dispatches','POST',{'ref':'main','inputs':{'expected_workflow_sha':sha}})
                   print('One reviewed workflow_dispatch requested. No signing/admin credentials accessed by dispatcher.')
