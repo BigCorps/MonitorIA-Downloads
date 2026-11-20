@@ -123,8 +123,27 @@ jobs:
                       if word in row.lower():kind=label;break
                   compile_spots.append((int(match.group(1)),kind))
           if current=='android-gates':
+              # Public metadata only: Gradle task names and a fixed allowlist
+              # of newly added regression names, NEVER assertion text or paths.
+              for stage in ('compileDebugKotlin','compileReleaseKotlin','lintDebug','testDebugUnitTest','licenseInventory'):
+                  if re.search(r'> Task :app:'+re.escape(stage)+r' FAILED',evidence):
+                      print('::notice::Android failed task category='+stage)
               for line,kind in compile_spots[:5]:
                   print('::notice::Android compiler diagnostic line='+str(line)+' category='+kind)
+              from xml.etree import ElementTree as ET
+              results=pathlib.Path(os.environ['MONITORIA_SOURCE_DIR'])/'android-agent/app/build/test-results/testDebugUnitTest'
+              for report in results.glob('TEST-*.xml'):
+                  try:
+                      suite=ET.parse(report).getroot()
+                      for case in suite.findall('testcase'):
+                          if case.find('failure') is None and case.find('error') is None:continue
+                          name=case.get('name','')
+                          if name in ('onlineOfflineStatusAndLeaseRefreshDoNotRestartCamera',
+                            'actualAuthorizationOrSourceChangesStillRequireReconfiguration',
+                            'singleCpuSpikeDoesNotPauseButSustainedCpuDoes',
+                            'criticalProtectionIsAlwaysImmediate'):
+                              print('::notice::Android synthetic regression failed='+name)
+                  except Exception:pass
               test_names=['handshakeAndPublishEmitPhasesWithoutSecrets','failureGuidanceDistinguishesStagesWithoutExposingRawErrors']
               for name in test_names:
                   if re.search(re.escape(name)+r'.*FAILED',evidence):
