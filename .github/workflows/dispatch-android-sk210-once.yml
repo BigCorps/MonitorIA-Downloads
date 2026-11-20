@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   dispatch:
-    if: github.repository == 'BigCorps/MonitorIA-Downloads' && contains(github.event.head_commit.message, 'android-reviewed-once-1daf99c33a0d2f86')
+    if: github.repository == 'BigCorps/MonitorIA-Downloads' && contains(github.event.head_commit.message, 'android-reviewed-code12-diagnose-1daf99c33a0d2f86')
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     steps:
