@@ -13,8 +13,8 @@ concurrency:
   cancel-in-progress: false
 env:
   # Reviewed private source. Changing it requires review; no mutable branch input.
-  MONITORIA_SOURCE_SHA: 0eaa4db15ea9a459241cf10ce1e7b8929c2b92c3
-  EXPECTED_VERSION_CODE: '7'
+  MONITORIA_SOURCE_SHA: 34e4bbff9c20b63e76c45e70e893f7f6ba595642
+  EXPECTED_VERSION_CODE: '8'
 jobs:
   android-preview:
     if: github.repository == 'BigCorps/MonitorIA-Downloads' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
