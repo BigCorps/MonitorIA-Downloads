@@ -198,19 +198,19 @@ jobs:
           script: |
             if ! python3 "$MONITORIA_SOURCE_DIR/android-agent/tools/downloads-preview.py" instrumented > "$RUNNER_TEMP/android-preview-private/instrumented-console.log" 2>&1; then
               python3 - <<'PY'
-          import os,pathlib
-          folder=pathlib.Path(os.environ['MONITORIA_SOURCE_DIR'])/'android-agent/app/build/reports/instrumented'
-          device=(folder/'device.txt')
-          if device.exists():
-              text=device.read_text(errors='replace')
-              # Fixed, allowlisted signal only: no private assertion output.
-              if 'RtmpCopyDeviceTest' in text and ('FAILURES!!!' in text or 'INSTRUMENTATION_FAILED' in text):
-                  print('::notice::Synthetic H264 stream-copy MP4 emulator test failed')
-              elif 'FAILURES!!!' in text:
-                  print('::notice::Pre-existing camera or RTSP emulator gate failed')
-              else:
-                  print('::notice::Device tests did not finish successfully')
-          PY
+            import os,pathlib
+            folder=pathlib.Path(os.environ['MONITORIA_SOURCE_DIR'])/'android-agent/app/build/reports/instrumented'
+            device=(folder/'device.txt')
+            if device.exists():
+                text=device.read_text(errors='replace')
+                # Fixed, allowlisted signal only: no private assertion output.
+                if 'RtmpCopyDeviceTest' in text and ('FAILURES!!!' in text or 'INSTRUMENTATION_FAILED' in text):
+                    print('::notice::Synthetic H264 stream-copy MP4 emulator test failed')
+                elif 'FAILURES!!!' in text:
+                    print('::notice::Pre-existing camera or RTSP emulator gate failed')
+                else:
+                    print('::notice::Device tests did not finish successfully')
+            PY
               echo "::error::Android instrumentation failed; no APK will be published."
               exit 1
             fi
