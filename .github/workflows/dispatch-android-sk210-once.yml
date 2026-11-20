@@ -1,4 +1,5 @@
 name: Dispatch reviewed Android SK210 once
+# One-shot manually reviewed code8 RTMP compatibility test; no automatic repeat.
 on:
   push:
     branches: [main]
