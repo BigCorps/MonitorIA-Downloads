@@ -1,5 +1,5 @@
 name: Dispatch reviewed Android SK210 once
-# One-shot reviewed code16 SK210 RTMP recovery and reboot with owner opt-in; no automatic repeat.
+# One-shot reviewed code17 SK210 opt-in severe thermal monitoring; no automatic repeat.
 on:
   push:
     branches: [main]
@@ -8,11 +8,11 @@ permissions:
   contents: write
   actions: write
 concurrency:
-  group: dispatch-android-code16-v1-20080a37d2ec2695
+  group: dispatch-android-code17-v1-b6e406106f096724
   cancel-in-progress: false
 jobs:
   dispatch:
-    if: github.repository == 'BigCorps/MonitorIA-Downloads' && contains(github.event.head_commit.message, 'android-reviewed-code16-recovery-v1-20080a37d2ec2695')
+    if: github.repository == 'BigCorps/MonitorIA-Downloads' && contains(github.event.head_commit.message, 'android-reviewed-code17-thermal-v1-b6e406106f096724')
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     steps:
@@ -24,7 +24,7 @@ jobs:
           import os,json,re,base64,subprocess,sys
           repo='BigCorps/MonitorIA-Downloads'
           workflow='build-monitoria-android-sk210-preview.yml'
-          expected='20080a37d2ec2695435daba99165482bdd4fb33e'
+          expected='b6e406106f096724dff9e15287a841fef631731b'
           def api(path,method='GET',body=None):
               args=['gh','api','repos/'+repo+'/'+path,'--method',method]
               if body is not None:args+=['--input','-']
@@ -44,7 +44,7 @@ jobs:
                   print('Manual Android run already exists for this workflow SHA; no retry or duplicate.')
               else:
                   # Atomic, durable claim: an existing ref fails closed, even if run history lags.
-                  api('git/refs','POST',{'ref':'refs/tags/ci-android-recovery-code16-v1-20080a37d2ec2695','sha':sha})
+                  api('git/refs','POST',{'ref':'refs/tags/ci-android-thermal-code17-v1-b6e406106f096724','sha':sha})
                   assert api('git/ref/heads/main')['object']['sha']==sha, 'Main advanced: no dispatch'
                   api('actions/workflows/'+workflow+'/dispatches','POST',{'ref':'main','inputs':{'expected_workflow_sha':sha}})
                   print('One reviewed workflow_dispatch requested. No signing/admin credentials accessed by dispatcher.')
