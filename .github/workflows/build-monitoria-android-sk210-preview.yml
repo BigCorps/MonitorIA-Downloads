@@ -3,9 +3,9 @@ on:
   workflow_dispatch:
     inputs:
       expected_workflow_sha:
-        description: Optional immutable SHA guard for the reviewed dispatcher
+        description: Immutable SHA guard for the reviewed dispatcher
         type: string
-        required: false
+        required: true
 permissions:
   contents: read
 concurrency:
@@ -13,11 +13,11 @@ concurrency:
   cancel-in-progress: false
 env:
   # Reviewed private source. Changing it requires review; no mutable branch input.
-  MONITORIA_SOURCE_SHA: e79a676fe9a8f5835404f268efeab374f4711610
-  EXPECTED_VERSION_CODE: '21'
+  MONITORIA_SOURCE_SHA: 611d7edffadfbe225bd5146f343948a9257cba20
+  EXPECTED_VERSION_CODE: '22'
 jobs:
   android-preview:
-    if: github.repository == 'BigCorps/MonitorIA-Downloads' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    if: github.repository == 'BigCorps/MonitorIA-Downloads' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/preview/android-sk210-code22'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     environment: android-private-signing
@@ -31,7 +31,7 @@ jobs:
         env:
           EXPECTED_WORKFLOW_SHA: ${{ inputs.expected_workflow_sha }}
         run: |
-          if [ -n "$EXPECTED_WORKFLOW_SHA" ] && [ "$EXPECTED_WORKFLOW_SHA" != "$GITHUB_SHA" ]; then
+          if [ "$EXPECTED_WORKFLOW_SHA" != "$GITHUB_SHA" ]; then
             echo "::error::Workflow SHA changed after authorization; no checkout or build."
             exit 1
           fi
@@ -179,6 +179,7 @@ jobs:
         run: |
           test "$GITHUB_ACTIONS" = true
           test "$RUNNER_OS" = Linux
+          command -v ffmpeg >/dev/null
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android/sdk/ndk
           python3 -c "import shutil; assert shutil.disk_usage('/home/runner').free >= 10*1024**3, 'Runner needs 10 GiB before emulator'"
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -209,7 +210,7 @@ jobs:
             echo "::error::Android signing gate failed; sanitized substage/counts above. No publication."
             exit 1
           fi
-      - name: Publish only APK, manifest and checksums as separate non-default preview
+      - name: Verify and retain only APK, manifest and checksums in an authenticated draft
         env:
           SOURCE_TOKEN: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
           PUBLIC_TOKEN: ${{ github.token }}
@@ -218,7 +219,7 @@ jobs:
             echo "::error::Preview publication stopped; no automatic overwrite or retry."
             exit 1
           fi
-          echo "Android preview verified. Download metadata is in the job summary."
+          echo "Android draft verified. Authorized Downloads collaborators can open the draft from the job summary."
       - name: Remove private source, logs, signing material and temporary packages
         if: always()
         run: rm -rf -- "$MONITORIA_SOURCE_DIR" "$RUNNER_TEMP/android-preview-private" "$RUNNER_TEMP/android-preview-out"

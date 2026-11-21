@@ -1,18 +1,18 @@
 name: Dispatch reviewed Android SK210 once
-# One-shot reviewed code21 SK210 Codex P1 ACK deadline with bounded IA POST; no automatic repeat.
+# One dispatch after the code22 source pin is reviewed and promoted in this branch.
 on:
   push:
-    branches: [main]
+    branches: [preview/android-sk210-code22]
     paths: [.github/workflows/dispatch-android-sk210-once.yml]
 permissions:
   contents: write
   actions: write
 concurrency:
-  group: dispatch-android-code21-v1-e79a676fe9a8f583
+  group: dispatch-android-code22-611d7edffadf
   cancel-in-progress: false
 jobs:
   dispatch:
-    if: github.repository == 'BigCorps/MonitorIA-Downloads' && contains(github.event.head_commit.message, 'android-reviewed-code21-ack-v1-e79a676fe9a8f583')
+    if: github.repository == 'BigCorps/MonitorIA-Downloads' && contains(github.event.head_commit.message, 'android-reviewed-code22-611d7edffadf')
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     steps:
@@ -21,10 +21,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 - <<'PY'
-          import os,json,re,base64,subprocess,sys
+          import os,json,re,base64,subprocess,sys,urllib.parse
           repo='BigCorps/MonitorIA-Downloads'
           workflow='build-monitoria-android-sk210-preview.yml'
-          expected='e79a676fe9a8f5835404f268efeab374f4711610'
+          expected='611d7edffadfbe225bd5146f343948a9257cba20'
+          branch='preview/android-sk210-code22'
           def api(path,method='GET',body=None):
               args=['gh','api','repos/'+repo+'/'+path,'--method',method]
               if body is not None:args+=['--input','-']
@@ -32,9 +33,9 @@ jobs:
               if p.returncode:raise RuntimeError('GitHub dispatcher API failed; no credential or response body logged')
               return json.loads(p.stdout) if p.stdout.strip() else {}
           try:
-              assert os.environ['GITHUB_REPOSITORY']==repo and os.environ['GITHUB_REF']=='refs/heads/main' and os.environ['GITHUB_EVENT_NAME']=='push'
+              assert os.environ['GITHUB_REPOSITORY']==repo and os.environ['GITHUB_REF']=='refs/heads/'+branch and os.environ['GITHUB_EVENT_NAME']=='push'
               sha=os.environ['GITHUB_SHA']
-              assert api('git/ref/heads/main')['object']['sha']==sha, 'Main advanced: no dispatch'
+              assert api('git/ref/heads/'+urllib.parse.quote(branch))['object']['sha']==sha, 'Preview branch advanced: no dispatch'
               f=api('contents/.github/workflows/'+workflow+'?ref='+sha)
               yaml=base64.b64decode(f['content']).decode()
               assert re.search(r'^  MONITORIA_SOURCE_SHA: '+expected+r'$',yaml,re.M), 'Reviewed source pin mismatch'
@@ -44,11 +45,11 @@ jobs:
                   print('Manual Android run already exists for this workflow SHA; no retry or duplicate.')
               else:
                   # Atomic, durable claim: an existing ref fails closed, even if run history lags.
-                  api('git/refs','POST',{'ref':'refs/tags/ci-android-ack-code21-v1-e79a676fe9a8f583','sha':sha})
-                  assert api('git/ref/heads/main')['object']['sha']==sha, 'Main advanced: no dispatch'
-                  api('actions/workflows/'+workflow+'/dispatches','POST',{'ref':'main','inputs':{'expected_workflow_sha':sha}})
+                  api('git/refs','POST',{'ref':'refs/tags/ci-android-code22-611d7edffadf','sha':sha})
+                  assert api('git/ref/heads/'+urllib.parse.quote(branch))['object']['sha']==sha, 'Preview branch advanced: no dispatch'
+                  api('actions/workflows/'+workflow+'/dispatches','POST',{'ref':branch,'inputs':{'expected_workflow_sha':sha}})
                   print('One reviewed workflow_dispatch requested. No signing/admin credentials accessed by dispatcher.')
           except Exception:
-              print('Dispatcher stopped: check current main/source pin/API permissions. No automatic retry.',file=sys.stderr)
+              print('Dispatcher stopped: check current preview ref, source pin and API permissions. No automatic retry.',file=sys.stderr)
               sys.exit(1)
           PY
