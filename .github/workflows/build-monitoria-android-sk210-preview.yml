@@ -6,6 +6,10 @@ on:
         description: Immutable SHA guard for the reviewed dispatcher
         type: string
         required: true
+      diagnostic_only:
+        description: Run Android instrumentation with sanitized diagnostics and no signing
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -36,6 +40,7 @@ jobs:
             exit 1
           fi
       - name: Check access and persistent signing bindings before checkout or SDK
+        if: '!inputs.diagnostic_only'
         env:
           MONITORIA_PRIVATE_SOURCE_TOKEN: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
           MONITORIA_ANDROID_SIGNING_STORE_B64: ${{ secrets.MONITORIA_ANDROID_SIGNING_STORE_B64 }}
@@ -69,6 +74,7 @@ jobs:
           persist-credentials: false
           show-progress: false
       - name: Validate source, existing Android identity and release inventory
+        if: '!inputs.diagnostic_only'
         env:
           SOURCE_TOKEN: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
           PUBLIC_TOKEN: ${{ github.token }}
@@ -100,6 +106,7 @@ jobs:
           packages: 'platform-tools platforms;android-36 build-tools;35.0.0'
           log-accepted-android-sdk-licenses: false
       - name: Compile, lint, interop, licenses and isolated PostgreSQL (private diagnostics only)
+        if: '!inputs.diagnostic_only'
         run: |
           if ! python3 "$MONITORIA_SOURCE_DIR/android-agent/tools/downloads-preview.py" validate > "$RUNNER_TEMP/android-preview-private/validate-console.log" 2>&1; then
             echo "::error::Android validation failed; private diagnostics are not uploaded."
@@ -182,6 +189,13 @@ jobs:
           PY
             exit 1
           fi
+      - name: Build debug and test APKs for instrumentation only
+        if: inputs.diagnostic_only
+        run: |
+          umask 077
+          mkdir -p "$RUNNER_TEMP/android-preview-private"
+          cd "$MONITORIA_SOURCE_DIR/android-agent"
+          bash gradlew --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest > "$RUNNER_TEMP/android-preview-private/debug-only.log" 2>&1
       - name: Reserve disposable runner disk and enable KVM
         run: |
           test "$GITHUB_ACTIONS" = true
@@ -204,7 +218,26 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -memory 2048
           script: >-
             python3 "$MONITORIA_SOURCE_DIR/android-agent/tools/downloads-preview.py" instrumented > "$RUNNER_TEMP/android-preview-private/instrumented-console.log" 2>&1 || { python3 "$MONITORIA_SOURCE_DIR/android-agent/tools/downloads-preview.py" status; echo "::error::Android instrumentation failed; no APK will be published."; exit 1; }
+      - name: Report instrumented counts and failing synthetic cases
+        if: always()
+        run: |
+          python3 - <<'DIAGNOSTIC'
+          import os,pathlib,re
+          root=pathlib.Path(os.environ['MONITORIA_SOURCE_DIR'])/'android-agent/app/build/reports/instrumented'
+          classes={'PermissionTest','DeviceTest','RtspTest','RtmpCopyDeviceTest','EvidenceQualityDeviceTest','VideoServiceSafetyTest','FiscalVideoWorkerDeviceTest','RemoteSupportVisibilityTest','UpgradeTest','BootTest'}
+          for name in ('permission-denied','device','remote-support','upgrade-seed','upgrade-verify','boot'):
+              path=root/(name+'.txt')
+              if not path.is_file():
+                  print(name+': no report')
+                  continue
+              result=path.read_text(errors='replace')
+              for counts in re.findall(r'(?m)^\s*(?:OK \(\d+ tests?\)|Tests run: \d+,\s+Failures: \d+)\s*$',result):
+                  print(name+': '+counts.strip())
+              for method,cls,line in re.findall(r'(?ms)^\d+\) ([\w]{1,100})\(cam\.monitoria\.agent\.(\w+)\).*?\(\w+\.kt:(\d+)\)',result):
+                  if cls in classes: print(f'{name}: failed {cls}.{method}, line {line}')
+          DIAGNOSTIC
       - name: Sign with the existing persistent key and verify APK
+        if: '!inputs.diagnostic_only'
         env:
           MONITORIA_ANDROID_SIGNING_STORE_B64: ${{ secrets.MONITORIA_ANDROID_SIGNING_STORE_B64 }}
           MONITORIA_ANDROID_STORE_PASSWORD: ${{ secrets.MONITORIA_ANDROID_STORE_PASSWORD }}
@@ -217,6 +250,7 @@ jobs:
             exit 1
           fi
       - name: Verify and retain only APK, manifest and checksums in an authenticated draft
+        if: '!inputs.diagnostic_only'
         env:
           SOURCE_TOKEN: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
           PUBLIC_TOKEN: ${{ github.token }}

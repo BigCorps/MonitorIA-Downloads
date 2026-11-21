@@ -8,11 +8,11 @@ permissions:
   contents: write
   actions: write
 concurrency:
-  group: dispatch-android-code22-fixture-611d7edffadf
+  group: dispatch-android-code22-diagnostic-611d7edffadf
   cancel-in-progress: false
 jobs:
   dispatch:
-    if: github.repository == 'BigCorps/MonitorIA-Downloads' && contains(github.event.head_commit.message, 'android-reviewed-code22-fixture-611d7edffadf')
+    if: github.repository == 'BigCorps/MonitorIA-Downloads' && contains(github.event.head_commit.message, 'android-reviewed-code22-diagnostic-611d7edffadf')
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     steps:
@@ -36,7 +36,7 @@ jobs:
               assert os.environ['GITHUB_REPOSITORY']==repo and os.environ['GITHUB_REF']=='refs/heads/'+branch and os.environ['GITHUB_EVENT_NAME']=='push'
               sha=os.environ['GITHUB_SHA']
               assert api('git/ref/heads/'+urllib.parse.quote(branch))['object']['sha']==sha, 'Preview branch advanced: no dispatch'
-              first=api('actions/runs/44847508955/jobs')['jobs']
+              first=api('actions/runs/44848148724/jobs')['jobs']
               assert len(first)==1 and first[0]['conclusion']=='failure', 'Expected infrastructure failure'
               steps={step['name']:step['conclusion'] for step in first[0]['steps']}
               assert steps.get('Sign with the existing persistent key and verify APK')=='skipped', 'Never rebuild a signed preview'
@@ -49,9 +49,9 @@ jobs:
                   print('Manual Android run already exists for this workflow SHA; no retry or duplicate.')
               else:
                   # Atomic, durable claim: an existing ref fails closed, even if run history lags.
-                  api('git/refs','POST',{'ref':'refs/tags/ci-android-code22-fixture-611d7edffadf','sha':sha})
+                  api('git/refs','POST',{'ref':'refs/tags/ci-android-code22-diagnostic-611d7edffadf','sha':sha})
                   assert api('git/ref/heads/'+urllib.parse.quote(branch))['object']['sha']==sha, 'Preview branch advanced: no dispatch'
-                  api('actions/workflows/'+workflow+'/dispatches','POST',{'ref':branch,'inputs':{'expected_workflow_sha':sha}})
+                  api('actions/workflows/'+workflow+'/dispatches','POST',{'ref':branch,'inputs':{'expected_workflow_sha':sha,'diagnostic_only':True}})
                   print('One reviewed workflow_dispatch requested. No signing/admin credentials accessed by dispatcher.')
           except Exception:
               print('Dispatcher stopped: check current preview ref, source pin and API permissions. No automatic retry.',file=sys.stderr)
