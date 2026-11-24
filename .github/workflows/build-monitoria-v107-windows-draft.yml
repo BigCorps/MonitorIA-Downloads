@@ -1,0 +1,138 @@
+name: MonitorIA Windows 24/7 1.0.7 signed draft
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: monitoria-windows-247-v107-draft
+  cancel-in-progress: false
+
+env:
+  MONITORIA_SOURCE_SHA: 3bdbfe15253a26fb27b15ff018566caff130265c
+
+jobs:
+  windows-247:
+    if: github.repository == 'BigCorps/MonitorIA-Downloads' && github.event.repository.private == false && github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 75
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check signing and source bindings
+        env:
+          MONITORIA_PRIVATE_SOURCE_TOKEN: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+          ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
+          ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
+          ESIGNER_CREDENTIAL_ID: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
+          ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
+          MONITORIA_AGENT_RELEASE_SIGNING_KEY_B64: ${{ secrets.MONITORIA_AGENT_RELEASE_SIGNING_KEY_B64 }}
+          MONITORIA_AGENT_RELEASE_KEY_SHA256: ${{ vars.MONITORIA_AGENT_RELEASE_KEY_SHA256 }}
+        run: |
+          $required = @("MONITORIA_PRIVATE_SOURCE_TOKEN", "ESIGNER_USERNAME", "ESIGNER_PASSWORD",
+            "ESIGNER_CREDENTIAL_ID", "ESIGNER_TOTP_SECRET", "MONITORIA_AGENT_RELEASE_SIGNING_KEY_B64",
+            "MONITORIA_AGENT_RELEASE_KEY_SHA256")
+          $missing = $required | Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
+          if ($missing) { throw "Missing bindings: $($missing -join ', ')" }
+          if ($env:MONITORIA_AGENT_RELEASE_KEY_SHA256 -cnotmatch '^[a-f0-9]{64}$') { throw "Invalid manifest fingerprint format" }
+
+      - name: Checkout public workflow tools
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+          show-progress: false
+
+      - name: Check fixed draft tag availability
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash tools/windows-v107-draft.sh check
+
+      - name: Validate trusted Ed25519 key before compiling
+        shell: bash
+        env:
+          MONITORIA_AGENT_RELEASE_SIGNING_KEY_B64: ${{ secrets.MONITORIA_AGENT_RELEASE_SIGNING_KEY_B64 }}
+          MONITORIA_AGENT_RELEASE_KEY_SHA256: ${{ vars.MONITORIA_AGENT_RELEASE_KEY_SHA256 }}
+        run: bash tools/windows-v107-draft.sh verify-key
+
+      - name: Verify the source repository is private
+        env:
+          GH_TOKEN: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+        run: |
+          $visible = gh api repos/BigCorps/MonitorIA --jq '.private' 2>$null
+          if ($LASTEXITCODE -ne 0 -or $visible -cne 'true') { throw "Private source access failed" }
+
+      - name: Checkout reviewed private source
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          repository: BigCorps/MonitorIA
+          ref: ${{ env.MONITORIA_SOURCE_SHA }}
+          token: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+          path: private-src
+          persist-credentials: false
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Verify the private revision and required files
+        run: ./tools/windows-v107-build.ps1 verify
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+
+      - name: Install pinned Bun baseline
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "monitoria-bun.zip"
+          $bunDir = Join-Path $env:RUNNER_TEMP "monitoria-bun"
+          Invoke-WebRequest 'https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-windows-x64-baseline.zip' -OutFile $archive
+          if ((Get-FileHash -LiteralPath $archive).Hash -ne '538f9c846355d9e847b2671bc00c47da4229a0befb24df3282b739770f3b475f') {
+            throw "Bun archive SHA-256 mismatch"
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $bunDir
+          $bun = Get-ChildItem -LiteralPath $bunDir -Recurse -File -Filter bun.exe | Select-Object -First 1
+          if (!$bun -or (& $bun.FullName --version) -ne '1.3.14') { throw "Bun 1.3.14 is unavailable" }
+          $bun.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Run Windows Agent and DVR regressions
+        run: ./tools/windows-v107-build.ps1 test
+
+      - name: Compile private source and verify pinned Windows dependencies
+        env:
+          GH_TOKEN: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+        run: ./tools/windows-v107-build.ps1 prepare
+
+      # The vendor action logs the command line. Initialize it without secrets.
+      - name: Initialize SSL.com CodeSignTool
+        uses: sslcom/esigner-codesign@cf5f6c1d38ad10f47e3ed9aca873f429b1a8d85b # v1.3.2
+        with:
+          command: --version
+          environment_name: PROD
+
+      - name: Sign auxiliary components with eSigner
+        env:
+          ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
+          ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
+          ESIGNER_CREDENTIAL_ID: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
+          ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
+        run: ./tools/windows-v107-build.ps1 sign
+
+      - name: Sign setup and uninstaller and validate upgrade from 1.0.6
+        env:
+          ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
+          ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
+          ESIGNER_CREDENTIAL_ID: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
+          ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
+        run: ./tools/windows-v107-build.ps1 package
+
+      - name: Stage verified files in an unpublished release draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MONITORIA_AGENT_RELEASE_SIGNING_KEY_B64: ${{ secrets.MONITORIA_AGENT_RELEASE_SIGNING_KEY_B64 }}
+          MONITORIA_AGENT_RELEASE_KEY_SHA256: ${{ vars.MONITORIA_AGENT_RELEASE_KEY_SHA256 }}
+        run: bash tools/windows-v107-draft.sh stage private-src/release-windows
