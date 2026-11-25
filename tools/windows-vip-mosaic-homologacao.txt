@@ -1,0 +1,17 @@
+MonitorIA VIP Mosaico
+Prévia de homologação Windows
+
+1. Extraia todos os arquivos para uma pasta local.
+2. Abra MonitorIA-VIP-Simulador.html no Edge ou Chrome.
+3. Execute MonitorIA-VIP-CapturePreview.exe.
+4. Escolha a janela do simulador e clique em Autorizar prévia.
+5. Clique em Salvar imagem para editar e escolha uma pasta particular.
+6. Volte ao simulador e use Abrir imagem da janela para abrir o BMP.
+7. Confira os quadros, corrija as áreas, nomeie as câmeras e salve o mapa.
+
+Confira a reação da prévia ao minimizar a janela ou bloquear a sessão.
+Para testar apenas o editor, use Usar imagem do simulador.
+
+Use uma sessão gráfica do Windows x64. O pacote inclui a prévia assinada
+e o simulador. O teste usa imagens sintéticas e dispensa DVR ou SDK.
+Ao terminar, encerre a prévia e apague os arquivos de imagem que salvou.
