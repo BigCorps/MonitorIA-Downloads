@@ -1,4 +1,3 @@
-import base64
 import hashlib
 import json
 import os
@@ -10,18 +9,17 @@ from zipfile import ZipFile
 
 
 SCRIPT = Path(__file__).with_name("windows-vip-mosaic-draft.sh").resolve()
-BUNDLE = "MonitorIA-VIP-Mosaico-1.0.0-beta.1-Homologacao.zip"
+BUNDLE = "MonitorIA-VIP-Mosaico-1.0.0-beta.1-Homologacao-NAO-ASSINADO.zip"
 PREVIEW = "MonitorIA-VIP-CapturePreview.exe"
 FILES = [PREVIEW, "MonitorIA-VIP-Simulador.html", "LEIA-ME.txt"]
-ASSETS = [BUNDLE, "RELEASE-MANIFEST.json", "SHA256SUMS.txt",
-          "SHA256SUMS.sig", "RELEASE-PUBLIC-KEY.pem"]
+ASSETS = [BUNDLE, "RELEASE-MANIFEST.json", "SHA256SUMS.txt"]
 FAKE_GH = """#!/usr/bin/env python3
 import json, os, pathlib, sys
 args = sys.argv[1:]
 state = pathlib.Path(os.environ["DRAFT_TEST_STATE"])
 endpoint = "repos/BigCorps/MonitorIA-Downloads/releases"
 if args[:4] == ["api", "--method", "POST", endpoint]:
-    tag = "vip-mosaic-windows-homologacao-v1.0.0-beta.1-" + os.environ["MONITORIA_SOURCE_SHA"][:12]
+    tag = "vip-mosaic-windows-unsigned-v1.0.0-beta.1-" + os.environ["MONITORIA_SOURCE_SHA"][:12]
     assert "tag_name=" + tag in args
     assert "target_commitish=" + os.environ["GITHUB_SHA"] in args
     assert "draft=true" in args and "prerelease=true" in args
@@ -116,26 +114,19 @@ class DraftTest(unittest.TestCase):
                 hashes[name] = hashlib.sha256(content).hexdigest()
         self.verification = {
             "files": hashes,
-            "authenticode": {"file": PREVIEW, "signerSha256": "1" * 64, "timestampVerified": True},
+            "authenticode": {"file": PREVIEW, "status": "NotSigned", "timestampVerified": False},
         }
         (self.release / "WINDOWS-VERIFICATION.json").write_text(json.dumps(self.verification))
         for name, source in [("gh", FAKE_GH), ("curl", FAKE_CURL)]:
             mock = self.root / name
             mock.write_text(source)
             mock.chmod(0o755)
-        key = self.command("openssl", "genpkey", "-algorithm", "ED25519", binary=True)
-        der = subprocess.run(
-            ["openssl", "pkey", "-pubout", "-outform", "DER"], input=key,
-            capture_output=True, check=True,
-        ).stdout
         self.state = self.root / "mock-release.json"
         self.env = os.environ | {
             "PATH": f"{self.root}{os.pathsep}{os.environ['PATH']}",
             "GITHUB_REPOSITORY": "BigCorps/MonitorIA-Downloads", "GITHUB_REF": "refs/heads/main",
             "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_SHA": self.public_sha,
             "MONITORIA_SOURCE_SHA": self.private_sha,
-            "MONITORIA_AGENT_RELEASE_SIGNING_KEY_B64": base64.b64encode(key).decode(),
-            "MONITORIA_AGENT_RELEASE_KEY_SHA256": hashlib.sha256(der).hexdigest(),
             "DRAFT_TEST_STATE": str(self.state), "DRAFT_TEST_ASSETS": json.dumps(ASSETS),
             "GH_TOKEN": "ghs_disposable_fixture",
         }
@@ -154,33 +145,37 @@ class DraftTest(unittest.TestCase):
         return subprocess.run(["bash", str(SCRIPT), mode], cwd=self.root, env=self.env | overrides,
                               capture_output=True, text=True)
 
-    def test_only_expected_signed_assets_and_distinct_commits(self):
-        self.assertEqual(self.stage("verify-key").returncode, 0)
+    def test_only_expected_unsigned_assets_and_distinct_commits(self):
         result = self.stage()
         self.assertEqual(result.returncode, 0, result.stderr)
         manifest = json.loads((self.release / "RELEASE-MANIFEST.json").read_text())
         self.assertEqual(manifest["sourceCommit"], self.private_sha)
         self.assertEqual(manifest["workflowCommit"], self.public_sha)
-        self.assertEqual(manifest["artifactType"], "homologation-preview")
+        self.assertEqual(manifest["artifactType"], "unsigned-internal-homologation-preview")
         self.assertEqual(manifest["authenticode"], self.verification["authenticode"])
+        self.assertIs(manifest["manifestSigned"], False)
         self.command("sha256sum", "--check", "SHA256SUMS.txt", cwd=self.release)
-        self.command("openssl", "pkeyutl", "-verify", "-rawin", "-pubin", "-inkey",
-                     "RELEASE-PUBLIC-KEY.pem", "-in", "SHA256SUMS.txt", "-sigfile",
-                     "SHA256SUMS.sig", cwd=self.release)
         self.assertNotEqual(self.stage("check").returncode, 0)
 
     def test_mismatch_or_untrusted_ref_never_creates_draft(self):
         self.assertNotEqual(self.stage(GITHUB_EVENT_NAME="pull_request").returncode, 0)
         self.assertNotEqual(self.stage(GITHUB_REF="refs/heads/topic").returncode, 0)
         self.assertNotEqual(self.stage(MONITORIA_SOURCE_SHA="0" * 40).returncode, 0)
-        self.assertNotEqual(self.stage(MONITORIA_AGENT_RELEASE_KEY_SHA256="0" * 64).returncode, 0)
         self.assertFalse(self.state.exists())
 
     def test_invalid_windows_verification_never_creates_draft(self):
-        self.verification["authenticode"]["timestampVerified"] = False
+        self.verification["authenticode"]["status"] = "Valid"
         (self.release / "WINDOWS-VERIFICATION.json").write_text(json.dumps(self.verification))
         self.assertNotEqual(self.stage().returncode, 0)
         self.assertFalse(self.state.exists())
+
+    def test_correction_branch_requires_owner_dispatch(self):
+        branch = "refs/heads/codex/vip-mosaic-unsigned-homologation"
+        self.assertNotEqual(self.stage(GITHUB_REF=branch, GITHUB_ACTOR="another-user").returncode, 0)
+        self.assertFalse(self.state.exists())
+        self.assertNotEqual(self.stage(GITHUB_REF=branch, GITHUB_ACTOR="BigCorps", GITHUB_TRIGGERING_ACTOR="another-user").returncode, 0)
+        result = self.stage(GITHUB_REF=branch, GITHUB_ACTOR="BigCorps", GITHUB_TRIGGERING_ACTOR="BigCorps")
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_initial_anonymous_access_stops_before_any_upload(self):
         result = self.stage(DRAFT_TEST_ANONYMOUS_RELEASE_STATUS="200")

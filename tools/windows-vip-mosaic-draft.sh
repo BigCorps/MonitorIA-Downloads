@@ -2,12 +2,17 @@
 set -euo pipefail
 
 [[ "${GITHUB_REPOSITORY:-}" == BigCorps/MonitorIA-Downloads ]]
-[[ "${GITHUB_REF:-}" == refs/heads/main && "${GITHUB_EVENT_NAME:-}" == workflow_dispatch ]]
+[[ "${GITHUB_EVENT_NAME:-}" == workflow_dispatch ]]
+case "${GITHUB_REF:-}" in
+  refs/heads/main) ;;
+  refs/heads/codex/vip-mosaic-unsigned-homologation) [[ "${GITHUB_ACTOR:-}" == BigCorps && "${GITHUB_TRIGGERING_ACTOR:-}" == BigCorps ]] ;;
+  *) exit 2 ;;
+esac
 [[ "${GITHUB_SHA:-}" =~ ^[a-f0-9]{40}$ && "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
 [[ "${MONITORIA_SOURCE_SHA:-}" =~ ^[a-f0-9]{40}$ ]]
 
-tag="vip-mosaic-windows-homologacao-v1.0.0-beta.1-${MONITORIA_SOURCE_SHA:0:12}"
-bundle="MonitorIA-VIP-Mosaico-1.0.0-beta.1-Homologacao.zip"
+tag="vip-mosaic-windows-unsigned-v1.0.0-beta.1-${MONITORIA_SOURCE_SHA:0:12}"
+bundle="MonitorIA-VIP-Mosaico-1.0.0-beta.1-Homologacao-NAO-ASSINADO.zip"
 release_endpoint="repos/$GITHUB_REPOSITORY/releases"
 asset_api="https://api.github.com/$release_endpoint/assets"
 release_id=""
@@ -62,42 +67,23 @@ cleanup_uploaded_assets() {
 mode="${1:-}"
 case "$mode" in
   check)
-    for tool in git gh jq openssl sha256sum base64 curl; do command -v "$tool" >/dev/null; done
+    for tool in git gh jq sha256sum curl; do command -v "$tool" >/dev/null; done
     check_tag
     exit
     ;;
-  verify-key|stage) ;;
+  stage) ;;
   *) exit 2 ;;
 esac
 
-[[ "${MONITORIA_AGENT_RELEASE_KEY_SHA256:-}" =~ ^[a-f0-9]{64}$ ]]
-umask 077
-key_dir="$(mktemp -d)"
 cleanup() {
   local exit_status=$?
   trap - EXIT
   if (( exit_status != 0 )) && [[ -n "$release_id" ]]; then
     cleanup_uploaded_assets
   fi
-  rm -- "$key_dir"/{key.pem,RELEASE-PUBLIC-KEY.pem,probe,probe.sig} 2>/dev/null || true
-  rmdir -- "$key_dir"
   exit "$exit_status"
 }
 trap cleanup EXIT
-key="$key_dir/key.pem"
-public_key="$key_dir/RELEASE-PUBLIC-KEY.pem"
-printf '%s' "$MONITORIA_AGENT_RELEASE_SIGNING_KEY_B64" | base64 --decode > "$key"
-openssl pkey -in "$key" -passin pass: -pubout -out "$public_key" 2>/dev/null
-openssl pkey -pubin -in "$public_key" -text_pub -noout | grep -qx 'ED25519 Public-Key:'
-fingerprint="$(openssl pkey -pubin -in "$public_key" -outform DER | sha256sum | cut -d' ' -f1)"
-[[ "$fingerprint" == "$MONITORIA_AGENT_RELEASE_KEY_SHA256" ]] || { echo 'Manifest signing key fingerprint mismatch.' >&2; exit 1; }
-
-if [[ "$mode" == verify-key ]]; then
-  printf 'MonitorIA VIP Mosaico manifest key check\n' > "$key_dir/probe"
-  openssl pkeyutl -sign -rawin -inkey "$key" -passin pass: -in "$key_dir/probe" -out "$key_dir/probe.sig" 2>/dev/null
-  [[ "$(wc -c < "$key_dir/probe.sig" | tr -d '[:space:]')" == 64 ]]
-  exit
-fi
 
 check_tag
 [[ "$(git -C private-src rev-parse HEAD)" == "$MONITORIA_SOURCE_SHA" ]]
@@ -108,30 +94,27 @@ jq -e \
   '(.files | keys == ["LEIA-ME.txt", "MonitorIA-VIP-CapturePreview.exe", "MonitorIA-VIP-Simulador.html"]) and
    (.files | all(.[]; test("^[a-f0-9]{64}$"))) and
    (.authenticode.file == "MonitorIA-VIP-CapturePreview.exe") and
-   (.authenticode.signerSha256 | test("^[a-f0-9]{64}$")) and (.authenticode.timestampVerified == true)' \
+   (.authenticode.status == "NotSigned") and (.authenticode.timestampVerified == false)' \
   WINDOWS-VERIFICATION.json >/dev/null
 jq --arg source "$MONITORIA_SOURCE_SHA" --arg workflow "$GITHUB_SHA" --arg bundle "$bundle" \
-  --arg digest "$bundle_digest" --arg key "$fingerprint" '{
-  version: "1.0.0-beta.1", artifactType: "homologation-preview", channel: "vip-mosaic-windows",
+  --arg digest "$bundle_digest" '{
+  version: "1.0.0-beta.1", artifactType: "unsigned-internal-homologation-preview", channel: "vip-mosaic-windows",
   sourceRepository: "BigCorps/MonitorIA", sourceBranch: "feature/vip-agent-mosaic-1.0.0",
   sourceCommit: $source, workflowCommit: $workflow, archive: $bundle, sha256: $digest,
-  manifestSigningKeySha256: $key, distribution: "draft", windowsInteractiveValidation: "pending",
+  distribution: "draft", manifestSigned: false, windowsInteractiveValidation: "pending",
   files: .files, authenticode: {
-    file: .authenticode.file, signerSha256: .authenticode.signerSha256,
+    file: .authenticode.file, status: .authenticode.status,
     timestampVerified: .authenticode.timestampVerified
   }
 }' WINDOWS-VERIFICATION.json > RELEASE-MANIFEST.json
 sha256sum "$bundle" RELEASE-MANIFEST.json > SHA256SUMS.txt
-cp "$public_key" RELEASE-PUBLIC-KEY.pem
-openssl pkeyutl -sign -rawin -inkey "$key" -passin pass: -in SHA256SUMS.txt -out SHA256SUMS.sig 2>/dev/null
-openssl pkeyutl -verify -rawin -pubin -inkey RELEASE-PUBLIC-KEY.pem -in SHA256SUMS.txt -sigfile SHA256SUMS.sig >/dev/null
 sha256sum --check SHA256SUMS.txt >/dev/null
 
-assets=("$bundle" RELEASE-MANIFEST.json SHA256SUMS.txt SHA256SUMS.sig RELEASE-PUBLIC-KEY.pem)
+assets=("$bundle" RELEASE-MANIFEST.json SHA256SUMS.txt)
 [[ "${GH_TOKEN:-}" =~ ^[A-Za-z0-9_]+$ ]]
 record="$(gh api --method POST "$release_endpoint" -f tag_name="$tag" -f target_commitish="$GITHUB_SHA" \
-  -F draft=true -F prerelease=true -f name='MonitorIA VIP Mosaico 1.0.0-beta.1 — homologação Windows' \
-  -f body='Prévia de captura gráfica assinada e simulador. Acesso restrito a colaboradores com escrita. Homologação interativa pendente.')"
+  -F draft=true -F prerelease=true -f name='MonitorIA VIP Mosaico 1.0.0-beta.1 — homologação Windows NÃO ASSINADA' \
+  -f body='Prévia NÃO ASSINADA para homologação interna exclusiva do proprietário. Acesso restrito a colaboradores com escrita. Não publicar nem redistribuir.')"
 release_id="$(jq -er '.id | numbers' <<< "$record")"
 [[ "$release_id" =~ ^[0-9]+$ ]]
 is_expected_draft <<< "$record"

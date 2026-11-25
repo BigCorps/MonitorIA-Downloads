@@ -1,32 +1,35 @@
 # Homologação Windows da MonitorIA VIP Mosaico
 
-O workflow **MonitorIA VIP Mosaico Windows homologation draft** compila a prévia de captura, prepara o simulador para uso offline e coloca o pacote assinado em um rascunho. O instalador operacional da Beta ainda é uma etapa posterior.
+O workflow **MonitorIA VIP Mosaico Windows unsigned internal preview** compila a prévia de captura e prepara um ZIP **não assinado**, reservado à homologação interna pelo proprietário. O pacote contém o executável de prévia, o simulador com editor offline e as instruções. Não inclui o instalador oficial.
+
+O Downloads usa somente `MONITORIA_PRIVATE_SOURCE_TOKEN` para ler o commit privado fixado. O `GITHUB_TOKEN` da execução escreve o Draft no Downloads. O eSigner, a chave de manifestos e `MONITORIA_DOWNLOADS_PUBLISH_TOKEN` são usados no MonitorIA, na etapa posterior de assinatura oficial e distribuição.
 
 ## Disparo
 
-Assim que o workflow estiver disponível na branch padrão do Downloads, use uma conta autorizada a executar Actions e acessar rascunhos desse repositório.
+A conta `BigCorps` pode executar a correção na branch revisada abaixo, antes do merge. Após a integração, use `--ref main`.
 
 ```powershell
 $repo = 'BigCorps/MonitorIA-Downloads'
 $workflow = 'build-monitoria-vip-mosaic-beta.yml'
-gh workflow run $workflow --repo $repo --ref main
-gh run list --repo $repo --workflow $workflow --branch main --limit 1
+$ref = 'codex/vip-mosaic-unsigned-homologation'
+gh workflow run $workflow --repo $repo --ref $ref
+gh run list --repo $repo --workflow $workflow --branch $ref --limit 1
 ```
 
-A execução usa um commit fixo e revisado de BigCorps/MonitorIA. O token `MONITORIA_PRIVATE_SOURCE_TOKEN` precisa de acesso de leitura ao conteúdo do repositório privado. Ela usa `ESIGNER_USERNAME`, `ESIGNER_PASSWORD`, `ESIGNER_CREDENTIAL_ID`, `ESIGNER_TOTP_SECRET` e `MONITORIA_AGENT_RELEASE_SIGNING_KEY_B64` como secrets. A variável `MONITORIA_AGENT_RELEASE_KEY_SHA256` contém a impressão digital esperada da chave pública Ed25519.
+## Download e teste
 
-## Acesso ao pacote
-
-Uma execução concluída deixa um rascunho com a tag `vip-mosaic-windows-homologacao-v1.0.0-beta.1-<SHA abreviado>`. Acesse Releases autenticado com uma conta que tenha escrita no repositório. Baixe o ZIP, o manifesto e os arquivos de verificação. Antes do envio, o workflow confirma por ID que o rascunho está vazio e que o acesso anônimo é recusado. Depois do envio, confere o hash e a recusa de acesso anônimo de cada arquivo. Se houver falha, preserva o rascunho e tenta retirar somente os arquivos cujo envio teve ID confirmado nessa execução. Para um participante externo, transfira o ZIP por um canal de acesso privado autorizado.
+Uma execução concluída deixa o Draft com a tag `vip-mosaic-windows-unsigned-v1.0.0-beta.1-109a84d95efa`. Em Releases, autentique-se com a conta do proprietário para baixar o ZIP, `RELEASE-MANIFEST.json` e `SHA256SUMS.txt`. A etapa confere o Draft vazio e o bloqueio anônimo antes do envio. Em seguida, verifica o hash e o bloqueio do acesso anônimo de cada arquivo. O Draft permanece restrito a colaboradores com escrita. Não publique o Draft nem redistribua a prévia.
 
 ```powershell
-$archive = 'MonitorIA-VIP-Mosaico-1.0.0-beta.1-Homologacao.zip'
+$archive = 'MonitorIA-VIP-Mosaico-1.0.0-beta.1-Homologacao-NAO-ASSINADO.zip'
 $manifest = Get-Content -Raw RELEASE-MANIFEST.json | ConvertFrom-Json
-if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne $manifest.sha256) {
-    throw 'O arquivo não corresponde ao manifesto.'
+if ($manifest.sourceCommit -cne '109a84d95efa3cc2d60017f330df9f49e2a0844c' -or
+    $manifest.authenticode.status -cne 'NotSigned' -or $manifest.manifestSigned -ne $false -or
+    (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne $manifest.sha256) {
+    throw 'O pacote baixado não corresponde à prévia interna.'
 }
 Expand-Archive $archive -DestinationPath MonitorIA-VIP-Homologacao
 Get-AuthenticodeSignature ./MonitorIA-VIP-Homologacao/MonitorIA-VIP-CapturePreview.exe
 ```
 
-A assinatura precisa ter status `Valid` e carimbo de tempo. Siga o `LEIA-ME.txt` extraído. O manifesto também registra o commit privado, o hash do executável e o estado da homologação interativa. `SHA256SUMS.sig` é a assinatura Ed25519 do arquivo `SHA256SUMS.txt`.
+O status esperado é `NotSigned`. O SHA-256 permite conferir a integridade do arquivo baixado da sessão autenticada. Se a política do Windows bloquear o executável, aguarde a edição assinada. Siga o `LEIA-ME.txt` para abrir o simulador, autorizar a janela e testar o editor sem instalar SDK ou compilador.
