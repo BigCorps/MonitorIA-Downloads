@@ -21,7 +21,9 @@ if args[:2] == ["release", "create"]:
     assert args[3:8] == json.loads(os.environ["DRAFT_TEST_ASSETS"])
     assert args[args.index("--target") + 1] == os.environ["GITHUB_SHA"]
     assert "--draft" in args and "--prerelease" in args
-    assert args[2] == "windows-247-v1.0.7-rc-" + os.environ["MONITORIA_SOURCE_SHA"][:12]
+    short_sha = os.environ["MONITORIA_SOURCE_SHA"][:12]
+    expected = "rc-v108-" + short_sha + "-windows-247" if os.environ.get("MONITORIA_RELEASE_VERSION") == "1.0.8" else "windows-247-v1.0.7-rc-" + short_sha
+    assert args[2] == expected
     state.write_text(json.dumps({
         "id": 23, "draft": True, "prerelease": True, "published_at": None,
         "target_commitish": os.environ["GITHUB_SHA"],
@@ -114,6 +116,14 @@ class DraftTest(unittest.TestCase):
             cwd=self.release,
         )
         self.assertNotEqual(self.run_script("check").returncode, 0)
+
+    def test_v108_gives_a_distinct_draft_and_private_source_reference(self):
+        result = self.run_script("stage", MONITORIA_RELEASE_VERSION="1.0.8")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        manifest = json.loads((self.release / "RELEASE-MANIFEST.json").read_text())
+        self.assertEqual(manifest["version"], "1.0.8")
+        self.assertEqual(manifest["sourceBranch"], "codex/agent-v108-rtmp-local")
+        self.assertEqual(manifest["sourceCommit"], self.private_sha)
 
     def test_gate_rejects_wrong_fingerprint_and_source_before_creating_draft(self):
         bad_key = self.run_script("stage", MONITORIA_AGENT_RELEASE_KEY_SHA256="0" * 64)

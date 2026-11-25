@@ -5,7 +5,12 @@ set -euo pipefail
 [[ "${GITHUB_REF:-}" == refs/heads/main && "${GITHUB_EVENT_NAME:-}" == workflow_dispatch ]]
 [[ "$GITHUB_SHA" =~ ^[a-f0-9]{40}$ && "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
 [[ "$MONITORIA_SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
-tag="windows-247-v1.0.7-rc-${MONITORIA_SOURCE_SHA:0:12}"
+version="${MONITORIA_RELEASE_VERSION:-1.0.7}"
+case "$version" in
+  1.0.7) tag="windows-247-v1.0.7-rc-${MONITORIA_SOURCE_SHA:0:12}"; source_branch="codex/agent-multiplatform-consolidation" ;;
+  1.0.8) tag="rc-v108-${MONITORIA_SOURCE_SHA:0:12}-windows-247"; source_branch="codex/agent-v108-rtmp-local" ;;
+  *) exit 2 ;;
+esac
 
 check_tag() {
   local matches refs
@@ -48,9 +53,9 @@ check_tag
 cd "$2"
 test -s MonitorIA-Setup.exe
 setup_digest="$(sha256sum MonitorIA-Setup.exe | cut -d' ' -f1)"
-jq -n --arg source "$MONITORIA_SOURCE_SHA" --arg workflow "$GITHUB_SHA"   --arg digest "$setup_digest" --arg key "$fingerprint" '{
-  version: "1.0.7", channel: "windows-247", sourceRepository: "BigCorps/MonitorIA",
-  sourceBranch: "codex/agent-multiplatform-consolidation", sourceCommit: $source,
+jq -n --arg source "$MONITORIA_SOURCE_SHA" --arg workflow "$GITHUB_SHA" --arg version "$version" --arg branch "$source_branch"   --arg digest "$setup_digest" --arg key "$fingerprint" '{
+  version: $version, channel: "windows-247", sourceRepository: "BigCorps/MonitorIA",
+  sourceBranch: $branch, sourceCommit: $source,
   workflowCommit: $workflow, sha256: $digest, manifestSigningKeySha256: $key,
   distribution: "draft", physicalValidation: "pending"
 }' > RELEASE-MANIFEST.json
@@ -62,7 +67,7 @@ sha256sum --check SHA256SUMS.txt
 
 assets=(MonitorIA-Setup.exe RELEASE-MANIFEST.json SHA256SUMS.txt SHA256SUMS.sig RELEASE-PUBLIC-KEY.pem)
 # The tag targets the public repository commit. Only the manifest identifies the private source.
-gh release create "$tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA"   --draft --prerelease --title 'MonitorIA Windows 24/7 1.0.7 RC'   --notes 'Rascunho para homologação Windows. Validação física pendente.' >/dev/null
+gh release create "$tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA"   --draft --prerelease --title "MonitorIA Windows 24/7 $version RC"   --notes 'Rascunho para homologação Windows. Validação física pendente.' >/dev/null
 
 record="$(gh api --method GET "repos/$GITHUB_REPOSITORY/releases" -f per_page=100 --paginate   --jq ".[] | select(.tag_name == \"$tag\")")"
 jq -e --arg target "$GITHUB_SHA" --argjson count "${#assets[@]}"   '.draft == true and .prerelease == true and .published_at == null and
