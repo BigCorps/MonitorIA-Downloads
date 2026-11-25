@@ -12,7 +12,11 @@ if ($env:GITHUB_ACTIONS -ne "true" -or $env:RUNNER_OS -ne "Windows" -or
 }
 
 $source = Join-Path $env:GITHUB_WORKSPACE "private-src"
-$log = Join-Path $env:RUNNER_TEMP "monitoria-v107-$Phase.log"
+$release = $env:MONITORIA_RELEASE_VERSION
+if (!$release) { $release = "1.0.7" }
+if ($release -notin @("1.0.7","1.0.8")) { throw "Unexpected release version" }
+$releaseDigits = $release.Replace(".", "")
+$log = Join-Path $env:RUNNER_TEMP "monitoria-v$releaseDigits-$Phase.log"
 $pwsh = (Get-Process -Id $PID).Path
 
 # Compilation, native tests and CodeSignTool may print private source or
@@ -27,17 +31,24 @@ try {
     switch ($Phase) {
       "verify" {
         git diff --quiet HEAD
-        foreach ($file in @($campaign, $signer, "agent/src/index-v107.ts", "package-lock.json")) {
+        foreach ($file in @($campaign, $signer, "agent/src/index-v$releaseDigits.ts", "package-lock.json")) {
           if (!(Test-Path -LiteralPath $file -PathType Leaf)) { throw "Private campaign dependency missing" }
         }
       }
       "test" {
         npm ci --no-audit --no-fund
         ./node_modules/.bin/tsc.cmd --noEmit -p agent/tsconfig.json
+        if ($release -eq "1.0.8") {
+          node --import tsx --test test/agent-v108-rtmp-setup.test.ts test/agent-v108-rtmp-database.test.ts test/agent-v107-media.test.ts
+        }
         node --import tsx --test test/agent-windows-dvr-channels.test.ts test/agent-onvif-incomplete-dvr-channels.test.ts test/discovery-visual-dedupe.test.ts test/agent-0106-auto-discovery.test.ts test/agent-0106-jortan-discovery.test.ts test/agent-0106-windows-legacy-auto.test.ts test/robustness-gate2-discovery.test.ts
       }
       "prepare" {
-        & $pwsh -NoProfile -NonInteractive -File $campaign prepare -Windows247Only
+        if ($release -eq "1.0.8") {
+          & $pwsh -NoProfile -NonInteractive -File $campaign prepare -Windows247Only -ReleaseVersion $release
+        } else {
+          & $pwsh -NoProfile -NonInteractive -File $campaign prepare -Windows247Only
+        }
       }
       "sign" {
         $env:MONITORIA_SIGN_CONTEXT = "windows-247-components"
@@ -49,7 +60,11 @@ try {
         }
       }
       "package" {
-        & $pwsh -NoProfile -NonInteractive -File $campaign package -Windows247Only
+        if ($release -eq "1.0.8") {
+          & $pwsh -NoProfile -NonInteractive -File $campaign package -Windows247Only -ReleaseVersion $release
+        } else {
+          & $pwsh -NoProfile -NonInteractive -File $campaign package -Windows247Only
+        }
         $candidate = Get-Item -LiteralPath release-windows/MonitorIA-Setup.exe
         $signature = Get-AuthenticodeSignature -LiteralPath $candidate.FullName
         if ($candidate.Length -le 0 -or $signature.Status -ne "Valid" -or !$signature.TimeStamperCertificate) {
