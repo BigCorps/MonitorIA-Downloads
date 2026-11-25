@@ -1,0 +1,108 @@
+name: MonitorIA VIP Mosaico Windows homologation draft
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: monitoria-vip-mosaic-windows-homologation
+  cancel-in-progress: false
+
+env:
+  MONITORIA_SOURCE_SHA: 109a84d95efa3cc2d60017f330df9f49e2a0844c
+
+jobs:
+  windows-preview:
+    if: github.repository == 'BigCorps/MonitorIA-Downloads' && github.event.repository.private == false && github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check signing and source bindings
+        env:
+          MONITORIA_PRIVATE_SOURCE_TOKEN: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+          ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
+          ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
+          ESIGNER_CREDENTIAL_ID: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
+          ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
+          MONITORIA_AGENT_RELEASE_SIGNING_KEY_B64: ${{ secrets.MONITORIA_AGENT_RELEASE_SIGNING_KEY_B64 }}
+          MONITORIA_AGENT_RELEASE_KEY_SHA256: ${{ vars.MONITORIA_AGENT_RELEASE_KEY_SHA256 }}
+        run: |
+          $required = @("MONITORIA_PRIVATE_SOURCE_TOKEN", "ESIGNER_USERNAME", "ESIGNER_PASSWORD",
+            "ESIGNER_CREDENTIAL_ID", "ESIGNER_TOTP_SECRET", "MONITORIA_AGENT_RELEASE_SIGNING_KEY_B64",
+            "MONITORIA_AGENT_RELEASE_KEY_SHA256")
+          $missing = $required | Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
+          if ($missing) { throw "Missing bindings: $($missing -join ', ')" }
+
+      - name: Checkout public build tools
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+          show-progress: false
+
+      - name: Check fixed draft tag availability
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash tools/windows-vip-mosaic-draft.sh check
+
+      - name: Validate manifest signing key fingerprint
+        shell: bash
+        env:
+          MONITORIA_AGENT_RELEASE_SIGNING_KEY_B64: ${{ secrets.MONITORIA_AGENT_RELEASE_SIGNING_KEY_B64 }}
+          MONITORIA_AGENT_RELEASE_KEY_SHA256: ${{ vars.MONITORIA_AGENT_RELEASE_KEY_SHA256 }}
+        run: bash tools/windows-vip-mosaic-draft.sh verify-key
+
+      - name: Verify the source repository is private
+        env:
+          GH_TOKEN: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+        run: |
+          $visible = gh api repos/BigCorps/MonitorIA --jq '.private' 2>$null
+          if ($LASTEXITCODE -ne 0 -or $visible -cne 'true') { throw "Private source access failed" }
+
+      - name: Checkout reviewed private source
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          repository: BigCorps/MonitorIA
+          ref: ${{ env.MONITORIA_SOURCE_SHA }}
+          token: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+          path: private-src
+          persist-credentials: false
+          fetch-depth: 1
+          show-progress: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+
+      - name: Build Windows capture preview and offline simulator
+        run: ./tools/windows-vip-mosaic-build.ps1 compile
+
+      # Keep the vendor action invocation free of signing credentials.
+      - name: Initialize SSL.com CodeSignTool
+        uses: sslcom/esigner-codesign@cf5f6c1d38ad10f47e3ed9aca873f429b1a8d85b # v1.3.2
+        with:
+          command: --version
+          environment_name: PROD
+
+      - name: Sign capture preview and verify archive contents
+        env:
+          ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
+          ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
+          ESIGNER_CREDENTIAL_ID: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
+          ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
+        run: ./tools/windows-vip-mosaic-build.ps1 package
+
+      - name: Stage verified files in an access-controlled draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MONITORIA_AGENT_RELEASE_SIGNING_KEY_B64: ${{ secrets.MONITORIA_AGENT_RELEASE_SIGNING_KEY_B64 }}
+          MONITORIA_AGENT_RELEASE_KEY_SHA256: ${{ vars.MONITORIA_AGENT_RELEASE_KEY_SHA256 }}
+        run: bash tools/windows-vip-mosaic-draft.sh stage
