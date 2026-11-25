@@ -6,6 +6,11 @@ try {
 private-repo\client-camera.cpp(165): error C2039: confidential symbol and private source
 private-repo\client-camera.cpp(166): error C2039: redundant message with token
 capture-preview.obj : error LNK2019: unresolved external symbol proprietary_helper
+private-repo\some-private-header.h(220): error C2338: static_assert failed: 'error STL1011: private token and source'
+private-file.cpp(3): error C2338: error STL1099: unknown private data
+VIP_NATIVE stage=sdk_probe_compile exit=2
+VIP_NATIVE stage=sdk_probe_link exit=1120
+VIP_NATIVE missing=cppwinrt/winrt/Windows.Foundation.h
   VIP_NATIVE stage=vcvars exit=1
 VIP_NATIVE stage=link exit=1120
 VIP_NATIVE sdk=10.0.26100.0
@@ -14,6 +19,7 @@ VIP_NATIVE sdk_candidate=10.0.26200.0
 VIP_NATIVE missing=um/windows.graphics.capture.interop.h
 VIP_NATIVE missing=windowsapp.lib
 VIP_NATIVE stage=setup reason=SDK_WGC_X64_INCOMPLETE
+VIP_NATIVE stage=setup reason=SDK_VERSION_MISMATCH
 VIP_NATIVE stage=setup reason=EXTRA_PRIVATE_REASON
 VIP_NATIVE missing=private/client-name.h
 VIP_NATIVE stage=compile exit=2 ::warning::injection
@@ -24,6 +30,11 @@ VIP_NATIVE msvc=14.43.34808 followed by a private token
     $expected = @(
         "VIP native: compiler_error=C2039",
         "VIP native: compiler_error=LNK2019",
+        "VIP native: compiler_error=C2338",
+        "VIP native: library_error=STL1011",
+        "VIP native: stage=sdk_probe_compile exit=2",
+        "VIP native: stage=sdk_probe_link exit=1120",
+        "VIP native: missing=cppwinrt/winrt/Windows.Foundation.h",
         "VIP native: stage=vcvars exit=1",
         "VIP native: stage=link exit=1120",
         "VIP native: sdk=10.0.26100.0",
@@ -31,7 +42,8 @@ VIP_NATIVE msvc=14.43.34808 followed by a private token
         "VIP native: sdk_candidate=10.0.26200.0",
         "VIP native: missing=um/windows.graphics.capture.interop.h",
         "VIP native: missing=windowsapp.lib",
-        "VIP native: stage=setup reason=SDK_WGC_X64_INCOMPLETE"
+        "VIP native: stage=setup reason=SDK_WGC_X64_INCOMPLETE",
+        "VIP native: stage=setup reason=SDK_VERSION_MISMATCH"
     )
     if (($actual -join "`n") -cne ($expected -join "`n")) { throw "Unexpected diagnostic output." }
     (1..30 | ForEach-Object { "compiler : error C{0}: confidential data" -f (1000 + $_) }) |
