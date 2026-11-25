@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  MONITORIA_SOURCE_SHA: 109a84d95efa3cc2d60017f330df9f49e2a0844c
+  MONITORIA_SOURCE_SHA: 9866b862c25955fe70ba5d38dae316d935e0ceed
 
 jobs:
   windows-preview:
@@ -68,6 +68,9 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
+
+      - name: Verify public compiler diagnostics redaction
+        run: ./tools/test-windows-vip-native-diagnostics.ps1
 
       - name: Build and test Windows preview and package it without signing
         run: ./tools/windows-vip-mosaic-build.ps1

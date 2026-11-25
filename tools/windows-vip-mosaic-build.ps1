@@ -10,6 +10,8 @@ if ($env:GITHUB_ACTIONS -ne "true" -or $env:RUNNER_OS -ne "Windows" -or
     throw "Run only on the authorized Downloads Windows workflow."
 }
 
+. (Join-Path $PSScriptRoot "windows-vip-native-diagnostics.ps1")
+
 $source = Join-Path $env:GITHUB_WORKSPACE "private-src"
 $payload = Join-Path $env:RUNNER_TEMP "monitoria-vip-payload"
 $release = Join-Path $env:GITHUB_WORKSPACE "release-vip"
@@ -38,6 +40,7 @@ try {
         $native = Join-Path $env:RUNNER_TEMP "monitoria-vip-native"
         $phase = "native compilation"
         & $pwsh -NoProfile -NonInteractive -File ./scripts/build-vip-mosaic-preview.ps1 -OutputDirectory $native
+        $phase = "native executable verification"
         Copy-Item -LiteralPath (Join-Path $native $previewName) -Destination $payload
         $phase = "offline simulator build"
         node ./scripts/build-vip-mosaic-offline.mjs $payload
@@ -84,9 +87,13 @@ try {
         }
         $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $release "WINDOWS-VERIFICATION.json") -Encoding utf8NoBOM
     } *> $log
+    Get-VipNativeDiagnostics -LogPath $log | ForEach-Object { Write-Host $_ }
 }
 catch {
-    throw "VIP Windows phase failed: $phase. Private diagnostics were suppressed."
+    if ($phase -eq "native compilation" -or $phase -eq "native executable verification") {
+        Get-VipNativeDiagnostics -LogPath $log | ForEach-Object { Write-Host $_ }
+    }
+    throw "VIP Windows phase failed: $phase. See any sanitized native diagnostics above."
 }
 finally {
     Pop-Location
