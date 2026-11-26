@@ -1,4 +1,4 @@
-MonitorIA VIP Mosaico
+MonitorIA VIP Mosaico 1.0.0-beta.2
 Prévia Windows NÃO ASSINADA — homologação interna do proprietário.
 
 1. Extraia o ZIP em uma pasta local.

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       preflight_only:
-        description: Verify real GitHub HTTP access and the empty draft without compiling
+        description: Verify GitHub media types and Beta.2 draft availability without compiling
         type: boolean
         default: true
 
@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  MONITORIA_SOURCE_SHA: 2e7ed0cd2d7fa322802e8f26f22c70f19f54ab1d
+  MONITORIA_SOURCE_SHA: e447eaeddc642192fedaed5900fe5f2a944c1e0c
 
 jobs:
   distribution-preflight:
@@ -34,7 +34,7 @@ jobs:
           persist-credentials: false
           show-progress: false
 
-      - name: Verify GitHub media types and the residual draft before Windows
+      - name: Verify GitHub media types and Beta.2 draft availability before Windows
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash tools/windows-vip-mosaic-draft.sh preflight

@@ -44,19 +44,14 @@ esac
 [[ "${GITHUB_SHA:-}" =~ ^[a-f0-9]{40}$ && "$(git rev-parse HEAD 2>/dev/null)" == "$GITHUB_SHA" ]]
 [[ "${MONITORIA_SOURCE_SHA:-}" =~ ^[a-f0-9]{40}$ ]]
 
-tag="vip-mosaic-windows-unsigned-v1.0.0-beta.1-${MONITORIA_SOURCE_SHA:0:12}"
-bundle="MonitorIA-VIP-Mosaico-1.0.0-beta.1-Homologacao-NAO-ASSINADO.zip"
+tag="vip-mosaic-windows-unsigned-v1.0.0-beta.2-${MONITORIA_SOURCE_SHA:0:12}"
+bundle="MonitorIA-VIP-Mosaico-1.0.0-beta.2-Homologacao-NAO-ASSINADO.zip"
 release_endpoint="repos/$GITHUB_REPOSITORY/releases"
 asset_api="https://api.github.com/$release_endpoint/assets"
 json_media=application/vnd.github+json
 binary_media=application/octet-stream
-draft_name='MonitorIA VIP Mosaico 1.0.0-beta.1 — homologação Windows NÃO ASSINADA'
+draft_name='MonitorIA VIP Mosaico 1.0.0-beta.2 — homologação Windows NÃO ASSINADA'
 draft_notes='Prévia NÃO ASSINADA para homologação interna exclusiva do proprietário. Acesso restrito a colaboradores com escrita. Não publicar nem redistribuir.'
-# Run 45738835409 created this exact draft from this public workflow revision
-# with the reviewed private SHA. Keep the original release target unchanged.
-resumable_id=458853594
-resumable_source=2e7ed0cd2d7fa322802e8f26f22c70f19f54ab1d
-resumable_target=c8adde4d82ccd07f4519d60747126964e85ec454
 draft_target=$GITHUB_SHA
 start_phase dependencies
 for tool in git gh jq sha256sum curl; do
@@ -90,24 +85,11 @@ read_draft() {
 }
 
 check_tag() {
-  local matches refs record
+  local matches refs
   matches="$(read_draft ' | .id')"
   refs="$(github_api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$tag" \
     --jq ".[] | select(.ref == \"refs/tags/$tag\") | .ref")"
-  [[ -z "$refs" ]] || fail "the exact VIP tag already exists and was left intact"
-  if [[ "$MONITORIA_SOURCE_SHA" == "$resumable_source" ]]; then
-    [[ "$matches" == "$resumable_id" ]] || fail "the expected residual draft was not uniquely listed"
-    release_id=$resumable_id
-    draft_target=$resumable_target
-    start_phase verify-residual-draft
-    record="$(github_api "$release_endpoint/$release_id")"
-    require_empty_draft "$record"
-    start_phase anonymous-draft
-    check_anonymous_denial "https://api.github.com/$release_endpoint/$release_id" "$json_media"
-    printf 'VIP distribution: residual draft %s verified\n' "$release_id"
-  elif [[ -n "$matches" ]]; then
-    fail "the exact VIP draft already exists and was left intact"
-  fi
+  [[ -z "$matches" && -z "$refs" ]] || fail "the exact VIP draft or tag already exists and was left intact"
 }
 
 is_expected_draft() {
@@ -202,7 +184,7 @@ jq -e \
   WINDOWS-VERIFICATION.json >/dev/null 2>&1 || fail "invalid Windows package verification manifest"
 jq --arg source "$MONITORIA_SOURCE_SHA" --arg workflow "$GITHUB_SHA" --arg bundle "$bundle" \
   --arg digest "$bundle_digest" --arg draftTarget "$draft_target" '{
-  version: "1.0.0-beta.1", artifactType: "unsigned-internal-homologation-preview", channel: "vip-mosaic-windows",
+  version: "1.0.0-beta.2", artifactType: "unsigned-internal-homologation-preview", channel: "vip-mosaic-windows",
   sourceRepository: "BigCorps/MonitorIA", sourceBranch: "feature/vip-agent-mosaic-1.0.0",
   sourceCommit: $source, workflowCommit: $workflow, draftTargetCommit: $draftTarget, archive: $bundle, sha256: $digest,
   distribution: "draft", manifestSigned: false, windowsInteractiveValidation: "pending",
@@ -216,14 +198,12 @@ sha256sum --binary -- "$bundle" RELEASE-MANIFEST.json > SHA256SUMS.txt 2>/dev/nu
 sha256sum --check SHA256SUMS.txt >/dev/null 2>&1 || fail "ZIP or release manifest checksum mismatch"
 
 assets=("$bundle" RELEASE-MANIFEST.json SHA256SUMS.txt)
-if [[ -z "$release_id" ]]; then
-  start_phase create-draft
-  record="$(github_api --method POST "$release_endpoint" -f tag_name="$tag" -f target_commitish="$draft_target" \
-    -F draft=true -F prerelease=true -f name="$draft_name" -f body="$draft_notes")"
-  release_id="$(jq -er '.id | numbers' <<< "$record" 2>/dev/null)" || fail "missing numeric draft ID"
-  [[ "$release_id" =~ ^[0-9]+$ ]] || fail "invalid draft ID"
-  require_empty_draft "$record"
-fi
+start_phase create-draft
+record="$(github_api --method POST "$release_endpoint" -f tag_name="$tag" -f target_commitish="$draft_target" \
+  -F draft=true -F prerelease=true -f name="$draft_name" -f body="$draft_notes")"
+release_id="$(jq -er '.id | numbers' <<< "$record" 2>/dev/null)" || fail "missing numeric draft ID"
+[[ "$release_id" =~ ^[0-9]+$ ]] || fail "invalid draft ID"
+require_empty_draft "$record"
 start_phase verify-empty-draft
 record="$(github_api "$release_endpoint/$release_id")"
 require_empty_draft "$record"

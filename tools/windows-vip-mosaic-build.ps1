@@ -59,7 +59,7 @@ try {
         New-Item -ItemType Directory -Path $release | Out-Null
         $instructions = Join-Path $payload "LEIA-ME.txt"
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot "windows-vip-mosaic-homologacao.txt") -Destination $instructions
-        $archive = Join-Path $release "MonitorIA-VIP-Mosaico-1.0.0-beta.1-Homologacao-NAO-ASSINADO.zip"
+        $archive = Join-Path $release "MonitorIA-VIP-Mosaico-1.0.0-beta.2-Homologacao-NAO-ASSINADO.zip"
         $expected = @($previewName, $simulatorName, "LEIA-ME.txt")
         $files = $expected | ForEach-Object { Join-Path $payload $_ }
         Compress-Archive -LiteralPath $files -DestinationPath $archive

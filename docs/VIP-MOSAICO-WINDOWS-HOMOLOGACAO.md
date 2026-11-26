@@ -12,28 +12,21 @@ A conta `BigCorps` pode executar a correção na branch revisada abaixo, antes d
 $repo = 'BigCorps/MonitorIA-Downloads'
 $workflow = 'build-monitoria-vip-mosaic-beta.yml'
 $ref = 'codex/vip-mosaic-unsigned-homologation'
-gh workflow run $workflow --repo $repo --ref $ref -f preflight_only=true
+gh workflow run $workflow --repo $repo --ref $ref -f preflight_only=false
 gh run list --repo $repo --workflow $workflow --branch $ref --limit 1
 ```
 
-O preflight executa apenas no runner Linux. Ele consulta anonimamente um release público e um asset público com os formatos oficiais. Em seguida, verifica o Draft com o cabeçalho JSON e confirma HTTP 404. HTTP 415 encerra a execução. O preflight não envia arquivos nem inicia Windows.
-
-Depois de confirmar que o preflight passou, execute a entrega:
-
-```powershell
-gh workflow run $workflow --repo $repo --ref $ref -f preflight_only=false
-```
-
-Essa execução repete o preflight antes de iniciar Windows e recompila a mesma fonte aprovada. O workflow retoma somente o Draft `458853594`, com a tag, o título, a descrição, a visibilidade e o commit público original conferidos, e exige que ele esteja vazio. O manifesto registra `draftTargetCommit` para o commit público original e `workflowCommit` para o commit público que gera o pacote.
+A execução manual verifica os formatos HTTP e a disponibilidade da tag Beta.2 no runner Linux antes de iniciar a compilação no Windows. A opção `preflight_only=true` encerra o workflow depois dessas verificações. A entrega cria um Draft exclusivo para a Beta.2, vinculado ao commit público da execução. O Draft Beta.1 `458853594` permanece como referência.
 
 ## Download e teste
 
-Uma execução concluída deixa o Draft com a tag `vip-mosaic-windows-unsigned-v1.0.0-beta.1-2e7ed0cd2d7f`. Em Releases, autentique-se com a conta do proprietário para baixar o ZIP, `RELEASE-MANIFEST.json` e `SHA256SUMS.txt`. A etapa confere o Draft vazio e o bloqueio anônimo antes do envio. Em seguida, verifica o hash e o bloqueio do acesso anônimo de cada arquivo. O Draft permanece restrito a colaboradores com escrita. Não publique o Draft nem redistribua a prévia.
+Uma execução concluída deixa o Draft com a tag `vip-mosaic-windows-unsigned-v1.0.0-beta.2-e447eaeddc64`. Em Releases, autentique-se com a conta do proprietário para baixar o ZIP, `RELEASE-MANIFEST.json` e `SHA256SUMS.txt`. A etapa confere o Draft vazio e o bloqueio anônimo antes do envio. Em seguida, verifica o hash e o bloqueio do acesso anônimo de cada arquivo. O Draft permanece restrito a colaboradores com escrita. Não publique o Draft nem redistribua a prévia.
 
 ```powershell
-$archive = 'MonitorIA-VIP-Mosaico-1.0.0-beta.1-Homologacao-NAO-ASSINADO.zip'
+$archive = 'MonitorIA-VIP-Mosaico-1.0.0-beta.2-Homologacao-NAO-ASSINADO.zip'
 $manifest = Get-Content -Raw RELEASE-MANIFEST.json | ConvertFrom-Json
-if ($manifest.sourceCommit -cne '2e7ed0cd2d7fa322802e8f26f22c70f19f54ab1d' -or
+if ($manifest.version -cne '1.0.0-beta.2' -or
+    $manifest.sourceCommit -cne 'e447eaeddc642192fedaed5900fe5f2a944c1e0c' -or
     $manifest.authenticode.status -cne 'NotSigned' -or $manifest.manifestSigned -ne $false -or
     (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne $manifest.sha256) {
     throw 'O pacote baixado não corresponde à prévia interna.'
@@ -52,4 +45,4 @@ Procure as linhas `VIP native:` no job. O workflow primeiro compila e vincula um
 
 Procure no log a linha `VIP distribution: failed phase=`. O workflow verifica o token do job e a disponibilidade da tag antes de compilar. Na distribuição, os diagnósticos distinguem a validação do manifesto Windows, os hashes, a criação e verificação do Draft, o envio, os digests e o bloqueio de acesso anônimo. Falhas HTTP mostram o status quando disponível. Cabeçalhos, credenciais e corpos de resposta ficam fora do log.
 
-O preflight interrompe a execução antes de recompilar se o Draft autorizado estiver ausente, tiver sido alterado ou já contiver arquivos, ou se a tag existir. Consulte o Draft autenticado no Downloads e confira os três arquivos esperados. O workflow preserva resultados anteriores. Em caso de falha no envio, a limpeza fica limitada aos arquivos criados pela própria execução no Draft confirmado.
+O preflight interrompe a execução antes de compilar se já existir um Draft ou uma tag para a Beta.2 nesse SHA. Consulte o Draft autenticado no Downloads e confira os três arquivos esperados. O workflow preserva resultados anteriores. Em caso de falha no envio, a limpeza fica limitada aos arquivos criados pela própria execução no Draft confirmado.

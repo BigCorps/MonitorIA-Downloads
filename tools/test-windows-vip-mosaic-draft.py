@@ -9,7 +9,7 @@ from zipfile import ZipFile
 
 
 SCRIPT = Path(__file__).with_name("windows-vip-mosaic-draft.sh").resolve()
-BUNDLE = "MonitorIA-VIP-Mosaico-1.0.0-beta.1-Homologacao-NAO-ASSINADO.zip"
+BUNDLE = "MonitorIA-VIP-Mosaico-1.0.0-beta.2-Homologacao-NAO-ASSINADO.zip"
 PREVIEW = "MonitorIA-VIP-CapturePreview.exe"
 FILES = [PREVIEW, "MonitorIA-VIP-Simulador.html", "LEIA-ME.txt"]
 ASSETS = [BUNDLE, "RELEASE-MANIFEST.json", "SHA256SUMS.txt"]
@@ -22,7 +22,7 @@ if args[:4] == ["api", "--method", "POST", endpoint]:
     if os.environ.get("DRAFT_TEST_CREATE_DENIED"):
         sys.stderr.write("organization-policy-detail (HTTP 403)")
         sys.exit(1)
-    tag = "vip-mosaic-windows-unsigned-v1.0.0-beta.1-" + os.environ["MONITORIA_SOURCE_SHA"][:12]
+    tag = "vip-mosaic-windows-unsigned-v1.0.0-beta.2-" + os.environ["MONITORIA_SOURCE_SHA"][:12]
     assert "tag_name=" + tag in args
     assert "target_commitish=" + os.environ["GITHUB_SHA"] in args
     assert "draft=true" in args and "prerelease=true" in args
@@ -50,8 +50,12 @@ elif args[0] == "api" and "/git/matching-refs/tags/" in args[1]:
     pass
 elif args[:4] == ["api", "--method", "GET", endpoint]:
     assert args[-1].endswith("| .id")
-    if state.exists():
-        print(json.loads(state.read_text())["id"])
+    tag = args[-1].split(chr(34))[1]
+    for record_path in (state, state.with_name("mock-beta1.json")):
+        if record_path.exists():
+            record = json.loads(record_path.read_text())
+            if record["tag_name"] == tag:
+                print(record["id"])
 else:
     sys.exit("unexpected mock call")
 """
@@ -183,6 +187,7 @@ class DraftTest(unittest.TestCase):
         self.assertEqual(manifest["sourceCommit"], self.private_sha)
         self.assertEqual(manifest["workflowCommit"], self.public_sha)
         self.assertEqual(manifest["draftTargetCommit"], self.public_sha)
+        self.assertEqual(manifest["version"], "1.0.0-beta.2")
         self.assertEqual(manifest["artifactType"], "unsigned-internal-homologation-preview")
         self.assertEqual(manifest["authenticode"], self.verification["authenticode"])
         self.assertIs(manifest["manifestSigned"], False)
@@ -204,7 +209,8 @@ class DraftTest(unittest.TestCase):
         self.assertFalse(self.state.exists())
 
     def test_existing_exact_release_blocks_preflight_and_is_preserved(self):
-        record = {"id": 15, "draft": True, "assets": [{"id": 99, "name": "untouched"}]}
+        record = {"id": 15, "tag_name": "vip-mosaic-windows-unsigned-v1.0.0-beta.2-" + self.private_sha[:12],
+                  "draft": True, "assets": [{"id": 99, "name": "untouched"}]}
         self.state.write_text(json.dumps(record))
         result = self.stage("check")
         self.assertNotEqual(result.returncode, 0)
@@ -226,76 +232,51 @@ class DraftTest(unittest.TestCase):
         self.assertNotIn("private-response-detail", result.stdout + result.stderr)
         self.assert_empty_draft()
 
-    def seed_residual(self, **overrides):
-        self.private_sha = "2e7ed0cd2d7fa322802e8f26f22c70f19f54ab1d"
-        self.env["MONITORIA_SOURCE_SHA"] = self.private_sha
-        # Provide the approved source's rev-parse result without materializing private Git objects.
-        mock = self.root / "git"
-        real_git = subprocess.check_output(["which", "git"], text=True).strip()
-        mock.write_text('#!/bin/sh\nif [ "$1:$2:$3:$4" = "-C:private-src:rev-parse:HEAD" ]; then printf "%s\\n" "$MONITORIA_SOURCE_SHA"; else exec "' + real_git + '" "$@"; fi\n')
-        mock.chmod(0o755)
-        origin = {
-            "id": 458853594, "tag_name": "vip-mosaic-windows-unsigned-v1.0.0-beta.1-2e7ed0cd2d7f",
-            "target_commitish": "c8adde4d82ccd07f4519d60747126964e85ec454",
-            "draft": True, "prerelease": True, "published_at": None, "assets": [],
-            "name": "MonitorIA VIP Mosaico 1.0.0-beta.1 — homologação Windows NÃO ASSINADA",
-            "body": "Prévia NÃO ASSINADA para homologação interna exclusiva do proprietário. Acesso restrito a colaboradores com escrita. Não publicar nem redistribuir.",
-        } | overrides
-        self.state.write_text(json.dumps(origin))
-        return origin
-
-    def test_http_preflight_reads_public_controls_and_residual_without_changes(self):
-        before = self.seed_residual()
+    def test_http_preflight_reads_public_controls_without_creating_draft(self):
         result = self.stage("preflight")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("control=asset-binary http=302", result.stdout)
-        self.assertIn("phase=anonymous-draft accept=application/vnd.github+json http=404", result.stdout)
-        self.assertEqual(json.loads(self.state.read_text()), before)
+        self.assertIn("phase=draft-availability", result.stdout)
+        self.assertFalse(self.state.exists())
         self.assertFalse((self.release / "RELEASE-MANIFEST.json").exists())
 
-    def test_public_media_control_failure_keeps_residual_unchanged(self):
-        before = self.seed_residual()
+    def test_public_media_control_failure_stops_before_draft(self):
         result = self.stage("preflight", DRAFT_TEST_PUBLIC_STATUS="415")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("control=release-json http=415", result.stdout)
-        self.assertNotIn("phase=verify-residual-draft", result.stdout)
-        self.assertEqual(json.loads(self.state.read_text()), before)
+        self.assertNotIn("phase=draft-availability", result.stdout)
+        self.assertFalse(self.state.exists())
 
-    def test_resume_original_target_and_record_distinct_new_workflow_commit(self):
-        before = self.seed_residual()
+    def test_beta_2_leaves_beta_1_draft_and_assets_untouched(self):
+        beta1 = self.state.with_name("mock-beta1.json")
+        beta1.write_text(json.dumps({
+            "id": 458853594, "tag_name": "vip-mosaic-windows-unsigned-v1.0.0-beta.1-2e7ed0cd2d7f",
+            "target_commitish": "c8adde4d82ccd07f4519d60747126964e85ec454",
+            "draft": True, "prerelease": True, "published_at": None,
+            "assets": [{"id": 100, "name": "beta1.zip"}],
+        }))
+        original = beta1.read_bytes()
         result = self.stage()
         self.assertEqual(result.returncode, 0, result.stderr)
         release = json.loads(self.state.read_text())
-        self.assertEqual(release["id"], before["id"])
-        self.assertEqual(release["target_commitish"], before["target_commitish"])
+        self.assertEqual(release["tag_name"], "vip-mosaic-windows-unsigned-v1.0.0-beta.2-" + self.private_sha[:12])
+        self.assertEqual(release["target_commitish"], self.public_sha)
         self.assertEqual(len(release["assets"]), 3)
-        manifest = json.loads((self.release / "RELEASE-MANIFEST.json").read_text())
-        self.assertEqual(manifest["draftTargetCommit"], before["target_commitish"])
-        self.assertEqual(manifest["workflowCommit"], self.public_sha)
-        self.assertEqual(manifest["sourceCommit"], self.private_sha)
-        self.command("sha256sum", "--check", "SHA256SUMS.txt", cwd=self.release)
+        self.assertEqual(beta1.read_bytes(), original)
         media = self.state.with_name("mock-media").read_text().splitlines()
         self.assertEqual(media, ["Accept: application/vnd.github+json", "Accept: application/octet-stream"] * 3)
 
-    def test_residual_requires_exact_id_target_metadata_visibility_and_no_assets(self):
-        for changes in ({"id": 99}, {"target_commitish": "0"*40}, {"tag_name": "wrong-tag"},
-                        {"draft": False}, {"published_at": "now"}, {"body": "different"},
-                        {"assets": [{"id": 99, "name": "preserved.zip"}]}):
-            before = self.seed_residual(**changes)
-            result = self.stage("preflight")
-            self.assertNotEqual(result.returncode, 0)
-            self.assertEqual(json.loads(self.state.read_text()), before)
-
-    def test_415_is_rejected_for_draft_and_asset(self):
-        before = self.seed_residual()
-        result = self.stage("preflight", DRAFT_TEST_ANONYMOUS_RELEASE_STATUS="415")
+    def test_415_is_rejected_for_new_draft_and_asset(self):
+        result = self.stage(DRAFT_TEST_ANONYMOUS_RELEASE_STATUS="415")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("phase=anonymous-draft", result.stderr)
-        self.assertEqual(json.loads(self.state.read_text()), before)
+        self.assertIn("HTTP 415", result.stderr)
+        self.assert_empty_draft()
+        self.state.unlink()
         result = self.stage(DRAFT_TEST_ASSET_BINARY_UNSUPPORTED="1")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("HTTP 415", result.stderr)
-        self.assertEqual(json.loads(self.state.read_text()), before)
+        self.assert_empty_draft()
 
     def test_mismatch_or_untrusted_ref_never_creates_draft(self):
         self.assertNotEqual(self.stage(GITHUB_EVENT_NAME="pull_request").returncode, 0)
