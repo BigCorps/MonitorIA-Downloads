@@ -37,3 +37,9 @@ O status esperado é `NotSigned`. O SHA-256 permite conferir a integridade do ar
 ## Se a compilação falhar
 
 Procure as linhas `VIP native:` no job. O workflow primeiro compila e vincula uma verificação de compatibilidade C++20 com as mesmas conversões COM e WinRT e as mesmas bibliotecas da prévia. As linhas distinguem a verificação da compilação e do link do aplicativo. Também exibem as versões do SDK e do MSVC, dependências conhecidas ausentes e códigos do compilador e da STL, como `STL1011`. A verificação não executa a captura no runner. A linha `first_error` mostra o primeiro erro reconhecido, a severidade e a categoria. Para origens conhecidas, exibe a categoria do arquivo e a linha. Em ambiguidades, só identifica símbolos públicos do SDK de uma lista permitida. Os caminhos, mensagens brutas do compilador e trechos de fonte ficam no log temporário do runner. O script remove esse log ao final.
+
+## Se a distribuição falhar
+
+Procure no log a linha `VIP distribution: failed phase=`. O workflow verifica o token do job e a disponibilidade da tag antes de compilar. Na distribuição, os diagnósticos distinguem a validação do manifesto Windows, os hashes, a criação e verificação do Draft, o envio, os digests e o bloqueio de acesso anônimo. Falhas HTTP mostram o status quando disponível. Cabeçalhos, credenciais e corpos de resposta ficam fora do log.
+
+Se houver um Draft ou uma tag para essa revisão, o preflight para antes de recompilar. Consulte o Draft autenticado no Downloads e confira os três arquivos esperados. O workflow preserva resultados anteriores. Em caso de falha no envio, a limpeza fica limitada aos arquivos criados pela própria execução no Draft confirmado.

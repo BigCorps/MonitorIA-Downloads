@@ -19,6 +19,9 @@ args = sys.argv[1:]
 state = pathlib.Path(os.environ["DRAFT_TEST_STATE"])
 endpoint = "repos/BigCorps/MonitorIA-Downloads/releases"
 if args[:4] == ["api", "--method", "POST", endpoint]:
+    if os.environ.get("DRAFT_TEST_CREATE_DENIED"):
+        sys.stderr.write("organization-policy-detail (HTTP 403)")
+        sys.exit(1)
     tag = "vip-mosaic-windows-unsigned-v1.0.0-beta.1-" + os.environ["MONITORIA_SOURCE_SHA"][:12]
     assert "tag_name=" + tag in args
     assert "target_commitish=" + os.environ["GITHUB_SHA"] in args
@@ -67,7 +70,12 @@ if url.netloc == "uploads.github.com":
     assert record["draft"] is True and record["id"] == 1
     assert args[1:3] == ["--config", "-"] and "--location" not in args
     assert os.environ["GH_TOKEN"] in sys.stdin.read()
+    assert "--write-out" in args
     name = parse_qs(url.query)["name"][0]
+    if os.environ.get("DRAFT_TEST_UPLOAD_DENIED"):
+        print("private-response-detail")
+        print(422)
+        sys.exit(0)
     names = json.loads(os.environ["DRAFT_TEST_ASSETS"])
     assert args[args.index("--data-binary") + 1] == "@" + name
     assert name == names[len(record["assets"])]
@@ -80,6 +88,7 @@ if url.netloc == "uploads.github.com":
     record["assets"].append(item)
     state.write_text(json.dumps(record))
     print(json.dumps(item))
+    print(201)
 elif url.netloc == "api.github.com" and url.path == endpoint + "/1":
     assert "--config" not in args
     assert not record["assets"]
@@ -156,6 +165,43 @@ class DraftTest(unittest.TestCase):
         self.assertIs(manifest["manifestSigned"], False)
         self.command("sha256sum", "--check", "SHA256SUMS.txt", cwd=self.release)
         self.assertNotEqual(self.stage("check").returncode, 0)
+
+    def test_check_and_stage_accept_stateless_jwt_style_job_token(self):
+        token = "ghs_1234_e30.payload-segment.signature_segment"
+        self.assertEqual(self.stage("check", GH_TOKEN=token).returncode, 0)
+        result = self.stage(GH_TOKEN=token)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(token, result.stdout + result.stderr)
+
+    def test_check_rejects_missing_or_config_unsafe_job_tokens(self):
+        for token in ("", "bad token", "bad\r\nheader", 'bad"header', "bad\\header"):
+            result = self.stage("check", GH_TOKEN=token)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("failed phase=token-binding", result.stderr)
+        self.assertFalse(self.state.exists())
+
+    def test_existing_exact_release_blocks_preflight_and_is_preserved(self):
+        record = {"id": 15, "draft": True, "assets": [{"id": 99, "name": "untouched"}]}
+        self.state.write_text(json.dumps(record))
+        result = self.stage("check")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("failed phase=draft-availability", result.stderr)
+        self.assertEqual(json.loads(self.state.read_text()), record)
+
+    def test_create_api_error_reports_phase_and_status_only(self):
+        result = self.stage(DRAFT_TEST_CREATE_DENIED="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("phase=create-draft api_exit=1 http=403", result.stderr)
+        self.assertNotIn("organization-policy-detail", result.stdout + result.stderr)
+        self.assertFalse(self.state.exists())
+
+    def test_upload_http_error_reports_status_without_response_body(self):
+        result = self.stage(DRAFT_TEST_UPLOAD_DENIED="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("HTTP 422", result.stderr)
+        self.assertIn("failed phase=upload-assets", result.stderr)
+        self.assertNotIn("private-response-detail", result.stdout + result.stderr)
+        self.assert_empty_draft()
 
     def test_mismatch_or_untrusted_ref_never_creates_draft(self):
         self.assertNotEqual(self.stage(GITHUB_EVENT_NAME="pull_request").returncode, 0)
