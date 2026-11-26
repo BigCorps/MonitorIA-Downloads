@@ -12,9 +12,19 @@ A conta `BigCorps` pode executar a correção na branch revisada abaixo, antes d
 $repo = 'BigCorps/MonitorIA-Downloads'
 $workflow = 'build-monitoria-vip-mosaic-beta.yml'
 $ref = 'codex/vip-mosaic-unsigned-homologation'
-gh workflow run $workflow --repo $repo --ref $ref
+gh workflow run $workflow --repo $repo --ref $ref -f preflight_only=true
 gh run list --repo $repo --workflow $workflow --branch $ref --limit 1
 ```
+
+O preflight executa apenas no runner Linux. Ele consulta anonimamente um release público e um asset público com os formatos oficiais. Em seguida, verifica o Draft com o cabeçalho JSON e confirma HTTP 404. HTTP 415 encerra a execução. O preflight não envia arquivos nem inicia Windows.
+
+Depois de confirmar que o preflight passou, execute a entrega:
+
+```powershell
+gh workflow run $workflow --repo $repo --ref $ref -f preflight_only=false
+```
+
+Essa execução repete o preflight antes de iniciar Windows e recompila a mesma fonte aprovada. O workflow retoma somente o Draft `458853594`, com a tag, o título, a descrição, a visibilidade e o commit público original conferidos, e exige que ele esteja vazio. O manifesto registra `draftTargetCommit` para o commit público original e `workflowCommit` para o commit público que gera o pacote.
 
 ## Download e teste
 
@@ -42,4 +52,4 @@ Procure as linhas `VIP native:` no job. O workflow primeiro compila e vincula um
 
 Procure no log a linha `VIP distribution: failed phase=`. O workflow verifica o token do job e a disponibilidade da tag antes de compilar. Na distribuição, os diagnósticos distinguem a validação do manifesto Windows, os hashes, a criação e verificação do Draft, o envio, os digests e o bloqueio de acesso anônimo. Falhas HTTP mostram o status quando disponível. Cabeçalhos, credenciais e corpos de resposta ficam fora do log.
 
-Se houver um Draft ou uma tag para essa revisão, o preflight para antes de recompilar. Consulte o Draft autenticado no Downloads e confira os três arquivos esperados. O workflow preserva resultados anteriores. Em caso de falha no envio, a limpeza fica limitada aos arquivos criados pela própria execução no Draft confirmado.
+O preflight interrompe a execução antes de recompilar se o Draft autorizado estiver ausente, tiver sido alterado ou já contiver arquivos, ou se a tag existir. Consulte o Draft autenticado no Downloads e confira os três arquivos esperados. O workflow preserva resultados anteriores. Em caso de falha no envio, a limpeza fica limitada aos arquivos criados pela própria execução no Draft confirmado.

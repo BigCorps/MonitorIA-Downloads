@@ -2,6 +2,11 @@ name: MonitorIA VIP Mosaico Windows unsigned internal preview
 
 on:
   workflow_dispatch:
+    inputs:
+      preflight_only:
+        description: Verify real GitHub HTTP access and the empty draft without compiling
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -14,11 +19,29 @@ env:
   MONITORIA_SOURCE_SHA: 2e7ed0cd2d7fa322802e8f26f22c70f19f54ab1d
 
 jobs:
-  windows-preview:
+  distribution-preflight:
     if: >-
       github.repository == 'BigCorps/MonitorIA-Downloads' && github.event.repository.private == false &&
       (github.ref == 'refs/heads/main' ||
        (github.ref == 'refs/heads/codex/vip-mosaic-unsigned-homologation' && github.actor == 'BigCorps' && github.triggering_actor == 'BigCorps'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify GitHub media types and the residual draft before Windows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash tools/windows-vip-mosaic-draft.sh preflight
+
+  windows-preview:
+    needs: distribution-preflight
+    if: inputs.preflight_only == false
     runs-on: windows-latest
     timeout-minutes: 25
     permissions:
