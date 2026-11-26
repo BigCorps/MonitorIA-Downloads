@@ -1,21 +1,47 @@
-name: MonitorIA VIP Mosaico Windows homologation draft
+name: MonitorIA VIP Mosaico Windows unsigned internal preview
 
 on:
   workflow_dispatch:
+    inputs:
+      preflight_only:
+        description: Verify GitHub media types and Beta.2 draft availability without compiling
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: monitoria-vip-mosaic-windows-homologation
+  group: monitoria-vip-mosaic-windows-unsigned
   cancel-in-progress: false
 
 env:
-  MONITORIA_SOURCE_SHA: 109a84d95efa3cc2d60017f330df9f49e2a0844c
+  MONITORIA_SOURCE_SHA: e447eaeddc642192fedaed5900fe5f2a944c1e0c
 
 jobs:
+  distribution-preflight:
+    if: >-
+      github.repository == 'BigCorps/MonitorIA-Downloads' && github.event.repository.private == false &&
+      (github.ref == 'refs/heads/main' ||
+       (github.ref == 'refs/heads/codex/vip-mosaic-unsigned-homologation' && github.actor == 'BigCorps' && github.triggering_actor == 'BigCorps'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify GitHub media types and Beta.2 draft availability before Windows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash tools/windows-vip-mosaic-draft.sh preflight
+
   windows-preview:
-    if: github.repository == 'BigCorps/MonitorIA-Downloads' && github.event.repository.private == false && github.ref == 'refs/heads/main'
+    needs: distribution-preflight
+    if: inputs.preflight_only == false
     runs-on: windows-latest
     timeout-minutes: 25
     permissions:
@@ -24,21 +50,13 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - name: Check signing and source bindings
+      - name: Check private-source read binding
         env:
           MONITORIA_PRIVATE_SOURCE_TOKEN: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
-          ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
-          ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
-          ESIGNER_CREDENTIAL_ID: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
-          ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
-          MONITORIA_AGENT_RELEASE_SIGNING_KEY_B64: ${{ secrets.MONITORIA_AGENT_RELEASE_SIGNING_KEY_B64 }}
-          MONITORIA_AGENT_RELEASE_KEY_SHA256: ${{ vars.MONITORIA_AGENT_RELEASE_KEY_SHA256 }}
         run: |
-          $required = @("MONITORIA_PRIVATE_SOURCE_TOKEN", "ESIGNER_USERNAME", "ESIGNER_PASSWORD",
-            "ESIGNER_CREDENTIAL_ID", "ESIGNER_TOTP_SECRET", "MONITORIA_AGENT_RELEASE_SIGNING_KEY_B64",
-            "MONITORIA_AGENT_RELEASE_KEY_SHA256")
-          $missing = $required | Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
-          if ($missing) { throw "Missing bindings: $($missing -join ', ')" }
+          if ([string]::IsNullOrWhiteSpace($env:MONITORIA_PRIVATE_SOURCE_TOKEN)) {
+            throw "Missing binding: MONITORIA_PRIVATE_SOURCE_TOKEN"
+          }
 
       - name: Checkout public build tools
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -51,13 +69,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash tools/windows-vip-mosaic-draft.sh check
-
-      - name: Validate manifest signing key fingerprint
-        shell: bash
-        env:
-          MONITORIA_AGENT_RELEASE_SIGNING_KEY_B64: ${{ secrets.MONITORIA_AGENT_RELEASE_SIGNING_KEY_B64 }}
-          MONITORIA_AGENT_RELEASE_KEY_SHA256: ${{ vars.MONITORIA_AGENT_RELEASE_KEY_SHA256 }}
-        run: bash tools/windows-vip-mosaic-draft.sh verify-key
 
       - name: Verify the source repository is private
         env:
@@ -81,28 +92,14 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Build Windows capture preview and offline simulator
-        run: ./tools/windows-vip-mosaic-build.ps1 compile
+      - name: Verify public compiler diagnostics redaction
+        run: ./tools/test-windows-vip-native-diagnostics.ps1
 
-      # Keep the vendor action invocation free of signing credentials.
-      - name: Initialize SSL.com CodeSignTool
-        uses: sslcom/esigner-codesign@cf5f6c1d38ad10f47e3ed9aca873f429b1a8d85b # v1.3.2
-        with:
-          command: --version
-          environment_name: PROD
+      - name: Build and test Windows preview and package it without signing
+        run: ./tools/windows-vip-mosaic-build.ps1
 
-      - name: Sign capture preview and verify archive contents
-        env:
-          ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
-          ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
-          ESIGNER_CREDENTIAL_ID: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
-          ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
-        run: ./tools/windows-vip-mosaic-build.ps1 package
-
-      - name: Stage verified files in an access-controlled draft
+      - name: Stage the unsigned preview in an access-controlled draft
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          MONITORIA_AGENT_RELEASE_SIGNING_KEY_B64: ${{ secrets.MONITORIA_AGENT_RELEASE_SIGNING_KEY_B64 }}
-          MONITORIA_AGENT_RELEASE_KEY_SHA256: ${{ vars.MONITORIA_AGENT_RELEASE_KEY_SHA256 }}
         run: bash tools/windows-vip-mosaic-draft.sh stage
