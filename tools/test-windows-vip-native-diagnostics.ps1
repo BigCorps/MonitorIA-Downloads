@@ -29,6 +29,7 @@ VIP_NATIVE msvc=14.43.34808 followed by a private token
     $actual = @(Get-VipNativeDiagnostics -LogPath $log)
     $expected = @(
         "VIP native: compiler_error=C2039",
+        "VIP native: first_error=C2039 severity=error category=missing-member file=unknown",
         "VIP native: compiler_error=LNK2019",
         "VIP native: compiler_error=C2338",
         "VIP native: library_error=STL1011",
@@ -48,7 +49,30 @@ VIP_NATIVE msvc=14.43.34808 followed by a private token
     if (($actual -join "`n") -cne ($expected -join "`n")) { throw "Unexpected diagnostic output." }
     (1..30 | ForEach-Object { "compiler : error C{0}: confidential data" -f (1000 + $_) }) |
         Set-Content -LiteralPath $log
-    if (@(Get-VipNativeDiagnostics -LogPath $log).Count -ne 12) { throw "Expected a bounded list of error codes." }
+    if (@(Get-VipNativeDiagnostics -LogPath $log | Where-Object { $_ -like "*compiler_error=*" }).Count -ne 12) { throw "Expected a bounded list of error codes." }
+    @'
+sdk-compatibility.cpp(23,12): error C2872: 'DirectX': ambiguous symbol [private path]
+some-secret-file(12): error C3083: private namespace
+sdk-compatibility.cpp(24): note: private name error C1234: fake error
+'@ | Set-Content -LiteralPath $log
+    $actual = @(Get-VipNativeDiagnostics -LogPath $log)
+    $expected = @(
+        "VIP native: compiler_error=C2872",
+        "VIP native: first_error=C2872 severity=error category=ambiguous-symbol file=sdk-probe line=23 symbol=DirectX",
+        "VIP native: compiler_error=C3083"
+    )
+    if (($actual -join "`n") -cne ($expected -join "`n")) { throw "Invalid first error redaction." }
+
+    Set-Content -LiteralPath $log "private.cpp(73): error C2872: 'ClientCode': ambiguous symbol"
+    if ((Get-VipNativeDiagnostics -LogPath $log | Select-Object -Last 1) -cne
+        "VIP native: first_error=C2872 severity=error category=ambiguous-symbol file=unknown") {
+        throw "Unapproved identifier or location escaped."
+    }
+    Set-Content -LiteralPath $log "LINK : fatal error LNK1104: cannot open private file"
+    if ((Get-VipNativeDiagnostics -LogPath $log | Select-Object -Last 1) -cne
+        "VIP native: first_error=LNK1104 severity=fatal-error category=linker file=unknown") {
+        throw "Link diagnostic did not retain category."
+    }
     Set-Content -LiteralPath $log "::warning::do not publish"
     if ((Get-VipNativeDiagnostics -LogPath $log) -ne "VIP native: no recognized diagnostic codes") {
         throw "Unrecognized output escaped."
