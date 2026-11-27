@@ -7,7 +7,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: monitoria-daily-reports-private-validation
+  group: monitoria-daily-reports-private-validation-${{ github.sha }}
   cancel-in-progress: false
 env:
   NEXT_PUBLIC_APP_URL: http://localhost:3000
@@ -22,9 +22,7 @@ jobs:
       matrix:
         include:
           - revision: candidate
-            sha: a7e1978f1980a6e55263db2dbcae8bf3525649e2
-          - revision: main-baseline
-            sha: 7d0ce43629631a492b65f77babf6a88b33ecd485
+            sha: a3c7dc1e773bb3d8a0bd184fdd5f0757e9d426a9
     name: validate-${{ matrix.revision }}
     env:
       MONITORIA_SOURCE_SHA: ${{ matrix.sha }}
