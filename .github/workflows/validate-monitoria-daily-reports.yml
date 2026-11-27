@@ -1,0 +1,88 @@
+name: MonitorIA — daily reports private validation
+on:
+  push:
+    branches: [ci/daily-reports-validation-20261126]
+    paths: ['.github/workflows/validate-monitoria-daily-reports.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: monitoria-daily-reports-private-validation
+  cancel-in-progress: false
+env:
+  MONITORIA_SOURCE_SHA: 7f1bba1894d40e683a851d1172d8924961d0e996
+  NEXT_PUBLIC_APP_URL: http://localhost:3000
+  APP_URL: http://localhost:3000
+  NEXT_PUBLIC_SUPABASE_URL: https://ci-placeholder.supabase.co
+  NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ci-placeholder-publishable-key
+jobs:
+  validate:
+    if: github.repository == 'BigCorps/MonitorIA-Downloads' && github.ref == 'refs/heads/ci/daily-reports-validation-20261126'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout reviewed immutable private source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: BigCorps/MonitorIA
+          ref: ${{ env.MONITORIA_SOURCE_SHA }}
+          token: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+          show-progress: false
+          path: private-src
+      - name: Verify exact revision
+        working-directory: private-src
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$MONITORIA_SOURCE_SHA"
+          git diff --quiet HEAD
+          echo "Immutable revision verified"
+      - name: Node 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Install dependencies without exposing private output
+        id: install
+        working-directory: private-src
+        run: |
+          set -euo pipefail
+          umask 077
+          if npm ci >"$RUNNER_TEMP/reports-install.log" 2>&1; then
+            echo "Dependency installation passed"
+          else
+            echo "::error::Dependency installation failed; private diagnostics not published"
+            exit 1
+          fi
+      - name: Focused report and existing PDV regression tests
+        working-directory: private-src
+        run: |
+          set -euo pipefail
+          umask 077
+          set +e
+          node --import tsx --test test/daily-reports-aggregate.test.ts test/daily-reports-links.test.ts test/daily-reports-push.test.ts test/pdv-sale-clip-plan.test.ts test/pdv-sale-review-filter.test.ts test/avisos-transports.test.ts >"$RUNNER_TEMP/reports-tests.log" 2>&1
+          result=$?
+          set -e
+          # Output only allowlisted numeric TAP totals. No private source or test names.
+          grep -E '^# (tests|suites|pass|fail|cancelled|skipped|todo) [0-9]+$' "$RUNNER_TEMP/reports-tests.log" || true
+          if [ "$result" -ne 0 ]; then echo "::error::Focused tests failed; private diagnostics not published"; fi
+          exit "$result"
+      - name: TypeScript validation
+        if: always() && steps.install.outcome == 'success'
+        working-directory: private-src
+        run: |
+          set -euo pipefail
+          umask 077
+          test -x node_modules/.bin/tsc || { echo "::error::Dependencies unavailable"; exit 1; }
+          set +e
+          npm run check >"$RUNNER_TEMP/reports-tsc.log" 2>&1
+          result=$?
+          set -e
+          echo "TypeScript diagnostics: $(grep -cE 'error TS[0-9]+:' "$RUNNER_TEMP/reports-tsc.log" || true)"
+          echo "Report-path diagnostics: $(grep -cE '^(src/daily-reports/|app/dashboard/avisos/relatorios/|app/dashboard/search/(page|assistant-chat)\.tsx|src/pdv-legal/monitoring-sales\.ts|test/daily-reports-).*error TS[0-9]+:' "$RUNNER_TEMP/reports-tsc.log" || true)"
+          if [ "$result" -ne 0 ]; then echo "::error::TypeScript check failed; private diagnostics not published"; fi
+          exit "$result"
+      - name: Remove temporary private diagnostics
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/reports-install.log" "$RUNNER_TEMP/reports-tests.log" "$RUNNER_TEMP/reports-tsc.log"
