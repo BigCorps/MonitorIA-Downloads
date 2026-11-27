@@ -10,7 +10,7 @@ concurrency:
   group: monitoria-daily-reports-private-validation
   cancel-in-progress: false
 env:
-  MONITORIA_SOURCE_SHA: 2cbe740a852dea6b049d346dabf0b92a6f1f7d30
+  MONITORIA_SOURCE_SHA: d8603b864ca21e1550ff6827978654ea6ca6e6df
   NEXT_PUBLIC_APP_URL: http://localhost:3000
   APP_URL: http://localhost:3000
   NEXT_PUBLIC_SUPABASE_URL: https://ci-placeholder.supabase.co
@@ -60,7 +60,7 @@ jobs:
           set -euo pipefail
           umask 077
           set +e
-          node --import tsx --test test/daily-reports-aggregate.test.ts test/daily-reports-links.test.ts test/daily-reports-push.test.ts test/pdv-sale-clip-plan.test.ts test/pdv-sale-review-filter.test.ts test/avisos-transports.test.ts >"$RUNNER_TEMP/reports-tests.log" 2>&1
+          node --import tsx --test test/daily-reports-aggregate.test.ts test/daily-reports-links.test.ts test/daily-reports-push.test.ts test/daily-reports-postgres.test.ts test/pdv-sale-clip-plan.test.ts test/pdv-sale-review-filter.test.ts test/avisos-transports.test.ts >"$RUNNER_TEMP/reports-tests.log" 2>&1
           result=$?
           set -e
           # Output only allowlisted numeric TAP totals. No private source or test names.
