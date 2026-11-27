@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  VIP_SOURCE: 58f23d87c1f4851f7328237f48b1155bc10b2ac9
+  VIP_SOURCE: d7d51c41138c80758bb83ebb9d626215ade4092c
 
 jobs:
   compile:
