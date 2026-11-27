@@ -1,0 +1,115 @@
+name: Protect 0.4.3 signed draft from successful qualification
+
+on:
+  push:
+    branches: [ci/protect-windows-043]
+    paths: ['build-requests/protect-qualified-run.txt']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: protect-windows-043-distribution
+  cancel-in-progress: false
+
+env:
+  MONITORIA_SOURCE_SHA: 02ed5d2d7429b394e76415d5f5cd40e42ee7f314
+  PROTECT_DRAFT_TAG: protect-windows-0.4.3-homologacao
+
+jobs:
+  sign:
+    if: github.repository == 'BigCorps/MonitorIA-Downloads' && github.ref == 'refs/heads/ci/protect-windows-043'
+    runs-on: windows-2022
+    timeout-minutes: 25
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          persist-credentials: false
+
+      - name: Verify successful QA run and recover the unchanged artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROTECT_QA_ARTIFACT_KEY: ${{ secrets.PROTECT_QA_ARTIFACT_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$PROTECT_QA_ARTIFACT_KEY"
+          run="$(tr -d '\r\n' < build-requests/protect-qualified-run.txt)"
+          [[ "$run" =~ ^[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run" --jq '[.conclusion,.head_branch,.path] | @tsv' > qa-run.tsv
+          IFS=$'\t' read -r conclusion branch workflow < qa-run.tsv
+          [[ "$conclusion" == success && "$branch" == ci/protect-windows-043 && "$workflow" == .github/workflows/qualify-protect-windows-043.yml ]]
+          cd "$(cygpath -u "$RUNNER_TEMP")"
+          gh run download "$run" --repo "$GITHUB_REPOSITORY" --name protect-qualified-candidate --dir sealed
+          mkdir recovered
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:PROTECT_QA_ARTIFACT_KEY -in sealed/protect-candidate.tar.gz.enc | tar -xzf - -C recovered
+          cd recovered
+          test "$(cat source.sha)" = "$MONITORIA_SOURCE_SHA"
+          sha256sum --check candidate.sha256
+          mv MonitorIA-Protect-Piloto-Setup.exe ..
+
+      - name: Check out the qualified private SHA
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          repository: BigCorps/MonitorIA
+          ref: ${{ env.MONITORIA_SOURCE_SHA }}
+          token: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+          path: private-src
+          persist-credentials: false
+
+      - name: Initialize existing SSL.com CodeSignTool
+        uses: sslcom/esigner-codesign@cf5f6c1d38ad10f47e3ed9aca873f429b1a8d85b
+        with:
+          command: --version
+          environment_name: PROD
+
+      - name: Sign qualified installer and verify Authenticode timestamp
+        shell: pwsh
+        working-directory: private-src
+        env:
+          ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
+          ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
+          ESIGNER_CREDENTIAL_ID: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
+          ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
+          MONITORIA_SIGN_CONTEXT: protect-windows-043-homologacao
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidate = Join-Path $env:RUNNER_TEMP 'MonitorIA-Protect-Piloto-Setup.exe'
+          $log = Join-Path $env:RUNNER_TEMP 'protect-sign.log'
+          try {
+            & ./scripts/sign-inno-authenticode.ps1 $candidate *> $log
+            $signature = Get-AuthenticodeSignature -LiteralPath $candidate
+            if ($signature.Status -ne 'Valid' -or -not $signature.TimeStamperCertificate) { throw 'Authenticode verification failed.' }
+          } catch { throw 'Existing eSigner signing or verification failed. No release was staged.' }
+          finally { Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue }
+
+      - name: Qualify signed installer under native Windows PowerShell 5.1
+        shell: powershell
+        working-directory: private-src
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidate = Join-Path $env:RUNNER_TEMP 'MonitorIA-Protect-Piloto-Setup.exe'
+          $previous = (Resolve-Path 'protect/pilot/artifacts/MonitorIA-Protect-Piloto-Setup.exe').Path
+          $log = Join-Path $env:RUNNER_TEMP 'protect-signed-qa.log'
+          try {
+            & ./protect/pilot/qa/Test-WindowsPackage.ps1 -Setup $candidate -PreviousSetup $previous *> $log
+            Get-Content -LiteralPath $log | Select-String '^Installed and upgraded, parsed with'
+            $hash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+            Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'SHA256SUMS.txt') -Value "$hash  MonitorIA-Protect-Piloto-Setup.exe" -Encoding ASCII
+          } catch { throw 'Signed package failed final qualification. Nothing was published.' }
+          finally { Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue }
+
+      - name: Stage signed installer as an unpublished Downloads draft
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $env:RUNNER_TEMP 'MonitorIA-Protect-Piloto-Setup.exe'
+          $hash = Join-Path $env:RUNNER_TEMP 'SHA256SUMS.txt'
+          gh release create $env:PROTECT_DRAFT_TAG $exe $hash --repo BigCorps/MonitorIA-Downloads --target $env:GITHUB_SHA --draft --prerelease --title 'MonitorIA Protect 0.4.3 - homologação' --notes 'Candidato experimental para a Loja de Serviços. Distribuição restrita em rascunho.'
+          if ($LASTEXITCODE -ne 0) { throw 'Downloads draft creation failed.' }

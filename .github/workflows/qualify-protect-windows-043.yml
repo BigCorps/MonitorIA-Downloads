@@ -1,4 +1,4 @@
-name: Protect 0.4.3 Windows qualification and signed draft
+name: Protect 0.4.3 Windows qualification
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  MONITORIA_SOURCE_SHA: 705488df070b9cc14c9dd055ecdbeb376a22dcba
+  MONITORIA_SOURCE_SHA: 02ed5d2d7429b394e76415d5f5cd40e42ee7f314
   PROTECT_DRAFT_TAG: protect-windows-0.4.3-homologacao
 
 jobs:
@@ -25,7 +25,7 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 40
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: Check out reviewed private source
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
@@ -79,94 +79,59 @@ jobs:
             if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $output)) { throw 'Protect installer compilation failed.' }
           } finally { Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue }
 
-      - name: Qualify installed candidate under powershell.exe 5.1
+      - name: Qualify installed package under powershell.exe 5.1
         shell: powershell
         working-directory: private-src
         run: |
           $ErrorActionPreference = 'Stop'
-          $log = Join-Path $env:RUNNER_TEMP 'protect-installed-qa.log'
+          $diagnostics = Join-Path $env:RUNNER_TEMP 'protect-qa-diagnostics'
+          $null = New-Item -Path $diagnostics -ItemType Directory -Force
           $candidate = Join-Path $env:RUNNER_TEMP 'MonitorIA-Protect-Piloto-Setup.exe'
           $previous = (Resolve-Path 'protect/pilot/artifacts/MonitorIA-Protect-Piloto-Setup.exe').Path
-          try {
-            & ./protect/pilot/qa/Test-WindowsPackage.ps1 -Setup $candidate -PreviousSetup $previous *> $log
-            Get-Content -LiteralPath $log | Select-String '^Installed and upgraded, parsed with [0-9.]+, opened the UI'
-          } catch {
-            $startupLog = Join-Path $env:LOCALAPPDATA 'MonitorIAProtectPilot\abertura.log'
-            $installed = Join-Path $env:LOCALAPPDATA 'MonitorIAProtectPilotApp'
-            Write-Host ("Startup log present: " + (Test-Path -LiteralPath $startupLog))
-            if (Test-Path -LiteralPath $startupLog) {
-              foreach ($entry in (Get-Content -LiteralPath $startupLog -Tail 4)) {
-                if ($entry -match 'linha ([0-9]+) \| ([A-Za-z]+):') {
-                  Write-Host ("Startup error at line {0}: {1}" -f $Matches[1], $Matches[2])
-                }
-              }
-            }
-            Write-Host ("Installed launcher present: " + (Test-Path -LiteralPath (Join-Path $installed 'Launch.vbs')))
-            $startupRecord = Join-Path $env:LOCALAPPDATA 'MonitorIAProtectPilot\ui-startup.json'
-            if (Test-Path -LiteralPath $startupRecord) {
-              $stage = (Get-Content -LiteralPath $startupRecord -Raw | ConvertFrom-Json).stage
-              if ($stage -in @('initializing','opening','shown')) { Write-Host "Installed UI stage: $stage" }
-            } else { Write-Host 'Installed UI stage: no-startup-record' }
-            $errorType = $_.Exception.GetType().Name
-            $scriptLine = $_.InvocationInfo.ScriptLineNumber
-            throw "Installed package QA failed on native PowerShell 5.1: $errorType at line $scriptLine. No package was signed."
-          } finally { Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue }
+          $powershell = Join-Path $PSHOME 'powershell.exe'
+          $process = Start-Process -FilePath $powershell -PassThru -Wait -ArgumentList @(
+            '-NoProfile','-NonInteractive','-File','./protect/pilot/qa/Test-WindowsPackage.ps1',
+            '-Setup',('"{0}"' -f $candidate),'-PreviousSetup',('"{0}"' -f $previous),'-DiagnosticsDirectory',('"{0}"' -f $diagnostics)
+          ) -RedirectStandardOutput (Join-Path $diagnostics 'stdout.txt') -RedirectStandardError (Join-Path $diagnostics 'stderr.txt')
+          Set-Content -LiteralPath (Join-Path $diagnostics 'exit-code.txt') -Value $process.ExitCode -Encoding ASCII
+          Get-Content -LiteralPath (Join-Path $diagnostics 'stdout.txt') | Select-String '^(Window proof:|Installed and upgraded, parsed with)'
+          if ($process.ExitCode -ne 0) { throw "Installed package QA failed with exit code $($process.ExitCode). See protected diagnostics." }
 
-      - name: Initialize existing SSL.com CodeSignTool
-        uses: sslcom/esigner-codesign@cf5f6c1d38ad10f47e3ed9aca873f429b1a8d85b
+      - name: Encrypt diagnostic artifact
+        if: always()
+        shell: bash
+        env:
+          PROTECT_QA_ARTIFACT_KEY: ${{ secrets.PROTECT_QA_ARTIFACT_KEY }}
+        run: |
+          set -euo pipefail
+          runner="$(cygpath -u "$RUNNER_TEMP")"
+          test -d "$runner/protect-qa-diagnostics" || exit 0
+          test -n "$PROTECT_QA_ARTIFACT_KEY"
+          tar -C "$runner/protect-qa-diagnostics" -czf - . | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:PROTECT_QA_ARTIFACT_KEY -out "$runner/protect-diagnostics.tar.gz.enc"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
         with:
-          command: --version
-          environment_name: PROD
+          name: protect-windows-diagnostics
+          path: ${{ runner.temp }}/protect-diagnostics.tar.gz.enc
+          retention-days: 7
+          if-no-files-found: ignore
 
-      - name: Sign qualified installer and verify Authenticode timestamp
-        shell: pwsh
-        working-directory: private-src
+      - name: Seal the qualified unsigned candidate
+        shell: bash
         env:
-          ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
-          ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
-          ESIGNER_CREDENTIAL_ID: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
-          ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
-          MONITORIA_SIGN_CONTEXT: protect-windows-043-homologacao
+          PROTECT_QA_ARTIFACT_KEY: ${{ secrets.PROTECT_QA_ARTIFACT_KEY }}
         run: |
-          $ErrorActionPreference = 'Stop'
-          $candidate = Join-Path $env:RUNNER_TEMP 'MonitorIA-Protect-Piloto-Setup.exe'
-          $log = Join-Path $env:RUNNER_TEMP 'protect-sign.log'
-          try {
-            & ./scripts/sign-inno-authenticode.ps1 $candidate *> $log
-            $signature = Get-AuthenticodeSignature -LiteralPath $candidate
-            if ($signature.Status -ne 'Valid' -or -not $signature.TimeStamperCertificate) { throw 'Authenticode verification failed.' }
-          } catch { throw 'Existing eSigner signing or verification failed. No release was staged.' }
-          finally { Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue }
+          set -euo pipefail
+          test -n "$PROTECT_QA_ARTIFACT_KEY"
+          cd "$(cygpath -u "$RUNNER_TEMP")"
+          sha256sum MonitorIA-Protect-Piloto-Setup.exe > candidate.sha256
+          printf '%s\n' "$MONITORIA_SOURCE_SHA" > source.sha
+          tar -czf - MonitorIA-Protect-Piloto-Setup.exe candidate.sha256 source.sha | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:PROTECT_QA_ARTIFACT_KEY -out protect-candidate.tar.gz.enc
 
-      - name: Requalify the signed file and record SHA-256
-        shell: powershell
-        working-directory: private-src
-        run: |
-          $ErrorActionPreference = 'Stop'
-          # These two locations were created by the previous isolated QA step on this disposable runner.
-          foreach ($name in @('MonitorIAProtectPilot','MonitorIAProtectPilotApp')) {
-            $fixture = Join-Path $env:LOCALAPPDATA $name
-            if (Test-Path -LiteralPath $fixture) { Remove-Item -LiteralPath $fixture -Recurse -Force }
-          }
-          $log = Join-Path $env:RUNNER_TEMP 'protect-signed-qa.log'
-          $candidate = Join-Path $env:RUNNER_TEMP 'MonitorIA-Protect-Piloto-Setup.exe'
-          $previous = (Resolve-Path 'protect/pilot/artifacts/MonitorIA-Protect-Piloto-Setup.exe').Path
-          try {
-            & ./protect/pilot/qa/Test-WindowsPackage.ps1 -Setup $candidate -PreviousSetup $previous *> $log
-            Get-Content -LiteralPath $log | Select-String '^Installed and upgraded, parsed with [0-9.]+, opened the UI'
-            $hash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
-            Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'SHA256SUMS.txt') -Value "$hash  MonitorIA-Protect-Piloto-Setup.exe" -Encoding ASCII
-          } catch {
-            throw "Signed package requalification failed: $($_.Exception.GetType().Name) at line $($_.InvocationInfo.ScriptLineNumber). No release was staged."
-          } finally { Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue }
-
-      - name: Stage signed installer as an unpublished Downloads draft
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $exe = Join-Path $env:RUNNER_TEMP 'MonitorIA-Protect-Piloto-Setup.exe'
-          $hash = Join-Path $env:RUNNER_TEMP 'SHA256SUMS.txt'
-          gh release create $env:PROTECT_DRAFT_TAG $exe $hash --repo BigCorps/MonitorIA-Downloads --target $env:GITHUB_SHA --draft --prerelease --title 'MonitorIA Protect 0.4.3 - homologação' --notes 'Candidato experimental para a Loja de Serviços. Distribuição restrita em rascunho.'
-          if ($LASTEXITCODE -ne 0) { throw 'Downloads draft creation failed.' }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: protect-qualified-candidate
+          path: ${{ runner.temp }}/protect-candidate.tar.gz.enc
+          retention-days: 7
+          if-no-files-found: error
