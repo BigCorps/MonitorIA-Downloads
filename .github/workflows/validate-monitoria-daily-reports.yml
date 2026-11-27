@@ -10,7 +10,7 @@ concurrency:
   group: monitoria-daily-reports-private-validation
   cancel-in-progress: false
 env:
-  MONITORIA_SOURCE_SHA: af0f12b97b544f9603b116f2966c3a2496a1bb48
+  MONITORIA_SOURCE_SHA: a7e1978f1980a6e55263db2dbcae8bf3525649e2
   NEXT_PUBLIC_APP_URL: http://localhost:3000
   APP_URL: http://localhost:3000
   NEXT_PUBLIC_SUPABASE_URL: https://ci-placeholder.supabase.co
@@ -19,7 +19,7 @@ jobs:
   validate:
     if: github.repository == 'BigCorps/MonitorIA-Downloads' && github.ref == 'refs/heads/ci/daily-reports-validation-20261126'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout reviewed immutable private source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -84,7 +84,37 @@ jobs:
           echo "Report-path diagnostics: $(grep -cE '^(src/daily-reports/|app/dashboard/avisos/relatorios/|app/dashboard/search/(page|assistant-chat)\.tsx|src/pdv-legal/monitoring-sales\.ts|test/daily-reports-).*error TS[0-9]+:' "$RUNNER_TEMP/reports-tsc.log" || true)"
           if [ "$result" -ne 0 ]; then echo "::error::TypeScript check failed; private diagnostics not published"; fi
           exit "$result"
+      - name: Install FFmpeg for regression tests
+        if: success()
+        run: |
+          sudo apt-get update -qq >/dev/null
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg >/dev/null
+          ffmpeg -version | head -n 1
+      - name: Complete test suite
+        working-directory: private-src
+        if: success()
+        run: |
+          set -euo pipefail
+          umask 077
+          set +e
+          npm test >"$RUNNER_TEMP/reports-full-tests.log" 2>&1
+          result=$?
+          set -e
+          grep -E '^# (tests|suites|pass|fail|cancelled|skipped|todo) [0-9]+$' "$RUNNER_TEMP/reports-full-tests.log" || true
+          exit "$result"
+      - name: Production build
+        working-directory: private-src
+        if: success()
+        run: |
+          set -euo pipefail
+          umask 077
+          if npm run build >"$RUNNER_TEMP/reports-build.log" 2>&1; then
+            echo "Production build passed"
+          else
+            echo "::error::Production build failed; private diagnostics not published"
+            exit 1
+          fi
       - name: Remove temporary private diagnostics
         if: always()
         run: |
-          rm -f "$RUNNER_TEMP/reports-install.log" "$RUNNER_TEMP/reports-tests.log" "$RUNNER_TEMP/reports-tsc.log"
+          rm -f "$RUNNER_TEMP/reports-install.log" "$RUNNER_TEMP/reports-tests.log" "$RUNNER_TEMP/reports-tsc.log" "$RUNNER_TEMP/reports-full-tests.log" "$RUNNER_TEMP/reports-build.log"
