@@ -1,0 +1,109 @@
+name: VIP Mosaico RC.1 private payload
+on:
+  workflow_dispatch:
+    inputs:
+      recipient_certificate:
+        description: Public transfer certificate in DER base64 with no private key
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vip-mosaic-rc1-windows
+  cancel-in-progress: false
+
+env:
+  VIP_SOURCE: 4513b2495c3eb0ba27413f1f8332bd27a89a8654
+
+jobs:
+  compile:
+    if: >-
+      github.repository == 'BigCorps/MonitorIA-Downloads' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor == 'BigCorps' && github.triggering_actor == 'BigCorps'
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Validate public transfer certificate
+        env:
+          VIP_CERTIFICATE: ${{ inputs.recipient_certificate }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $encoded = $env:VIP_CERTIFICATE
+          if ($encoded -cnotmatch '^[A-Za-z0-9+/=]{256,8192}$') { throw 'Invalid certificate encoding.' }
+          $publicCert = [Security.Cryptography.X509Certificates.X509Certificate2]::new([Convert]::FromBase64String($encoded))
+          $rsa = [Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPublicKey($publicCert)
+          if (!$rsa -or $rsa.KeySize -lt 3072 -or $publicCert.HasPrivateKey -or $publicCert.NotAfter -le [DateTime]::Now) {
+            throw 'A valid RSA transfer certificate of at least 3072 bits is required.'
+          }
+          [IO.File]::WriteAllBytes((Join-Path $env:RUNNER_TEMP 'vip-recipient.der'), $publicCert.RawData)
+      - name: Confirm source privacy
+        env:
+          GH_TOKEN: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+        run: |
+          $result = gh api repos/BigCorps/MonitorIA --jq '.private' 2>$null
+          if ($LASTEXITCODE -ne 0 -or $result -cne 'true') { throw 'Private source access unavailable.' }
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          repository: BigCorps/MonitorIA
+          ref: ${{ env.VIP_SOURCE }}
+          token: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+          persist-credentials: false
+          path: private-src
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Retrieve pinned dependencies
+        working-directory: private-src
+        env:
+          GH_TOKEN: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+        run: |
+          if ((git rev-parse HEAD).Trim() -cne $env:VIP_SOURCE) { throw 'Source SHA differs.' }
+          $log = Join-Path $env:RUNNER_TEMP vip-deps.log
+          try {
+            ./scripts/get-vip-mosaic-rc1-dependencies.ps1 (Join-Path $env:RUNNER_TEMP 'vip-work/dependencies') *> $log
+          } catch { throw 'VIP dependency preparation failed.' }
+          finally { Remove-Item -LiteralPath $log -ErrorAction SilentlyContinue }
+      - name: Compile and test the approved revision
+        working-directory: private-src
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $work = Join-Path $env:RUNNER_TEMP vip-work
+          $log = Join-Path $env:RUNNER_TEMP vip-build.log
+          try {
+            & {
+              npm ci --ignore-scripts --no-audit --no-fund
+              ./scripts/build-vip-mosaic-rc1.ps1 compile $work $env:VIP_DEPENDENCIES $env:VIP_DEPENDENCIES_SHA https://vip.monitoria.cam
+              $env:MONITORIA_VIP_TEST_FFMPEG = Join-Path $work 'payload/tools/ffmpeg.exe'
+              $env:MONITORIA_VIP_TEST_FFPROBE = Join-Path $work 'payload/tools/ffprobe.exe'
+              node --import tsx --test test/agent-vip-mosaic-evidence.test.ts test/vip-mosaic-fixed-capture.test.ts test/vip-mosaic-verified-capture.test.ts
+            } *> $log
+          } catch { throw 'VIP compilation or Windows tests failed.' }
+          finally { Remove-Item -LiteralPath $log -ErrorAction SilentlyContinue }
+          [ordered]@{
+            privateSource = $env:VIP_SOURCE
+            publicWorkflow = $env:GITHUB_SHA
+            runId = $env:GITHUB_RUN_ID
+            dependencyManifest = $env:VIP_DEPENDENCIES_SHA
+          } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $work transfer.json)
+          Compress-Archive -LiteralPath @((Join-Path $work payload), (Join-Path $work dependencies), (Join-Path $work transfer.json)) -DestinationPath (Join-Path $env:RUNNER_TEMP vip-transfer.zip)
+      - name: Seal payload for the private signing operator
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          openssl cms -encrypt -binary -aes-256-gcm -in vip-transfer.zip -outform DER -out vip-transfer.cms -recip vip-recipient.der -inform DER
+          sha256sum vip-transfer.cms
+      - name: Retain ciphertext only
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: vip-rc1-encrypted-${{ env.VIP_SOURCE }}
+          path: ${{ runner.temp }}/vip-transfer.cms
+          retention-days: 3
+          if-no-files-found: error
