@@ -1,0 +1,2 @@
+Qualify MonitorIA Protect 0.4.3 for private field testing.
+Private source SHA 64e1faa2862e65f27aaf6e856b5c830cc364fbde.
