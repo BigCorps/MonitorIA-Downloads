@@ -10,7 +10,7 @@ concurrency:
   group: monitoria-daily-reports-private-validation
   cancel-in-progress: false
 env:
-  MONITORIA_SOURCE_SHA: 1f19e616f15dce6b2f5b3fc4450d108da60740b1
+  MONITORIA_SOURCE_SHA: af0f12b97b544f9603b116f2966c3a2496a1bb48
   NEXT_PUBLIC_APP_URL: http://localhost:3000
   APP_URL: http://localhost:3000
   NEXT_PUBLIC_SUPABASE_URL: https://ci-placeholder.supabase.co
