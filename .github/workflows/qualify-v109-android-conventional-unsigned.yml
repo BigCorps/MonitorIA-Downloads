@@ -1,0 +1,93 @@
+name: MonitorIA 1.0.9 conventional Android unsigned qualification only
+on:
+  push:
+    branches: [ci/agent-v109-native-qualification]
+    paths: ['.github/workflows/qualify-v109-android-conventional-unsigned.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: monitoria-v109-conventional-unsigned
+  cancel-in-progress: false
+env:
+  MONITORIA_SOURCE_SHA: 339046a946a884d898fb9120c7e109b4c5798c35
+jobs:
+  conventional:
+    if: github.repository == 'BigCorps/MonitorIA-Downloads' && github.ref == 'refs/heads/ci/agent-v109-native-qualification' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: write
+    steps:
+      - name: Require private source
+        env:
+          GH_TOKEN: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+        run: test "$(gh api repos/BigCorps/MonitorIA --jq .private)" = true
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          repository: BigCorps/MonitorIA
+          ref: ${{ env.MONITORIA_SOURCE_SHA }}
+          token: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+          path: private-src
+          persist-credentials: false
+          show-progress: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
+        with:
+          cmdline-tools-version: '13114758'
+          packages: 'platform-tools platforms;android-36 build-tools;35.0.0'
+          log-accepted-android-sdk-licenses: false
+      - name: Compile and validate the conventional channel without signing credentials
+        working-directory: private-src/android-agent
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$MONITORIA_SOURCE_SHA"
+          umask 077
+          log="$RUNNER_TEMP/v109-conventional.log"
+          trap 'rm -f "$log"' EXIT
+          for task in testDebugUnitTest lintDebug assembleRelease; do
+            if ! bash gradlew --no-daemon -PmonitoriaAndroidChannel=conventional "$task" >"$log" 2>&1; then
+              echo "::error::Conventional Android private gate failed: $task"
+              exit 1
+            fi
+            echo "Passed: $task"
+          done
+          apk=app/build/outputs/apk/release/app-release-unsigned.apk
+          test -s "$apk"
+          tools="$ANDROID_HOME/build-tools/35.0.0"
+          badging="$("$tools/aapt" dump badging "$apk" | head -n 1)"
+          [[ "$badging" == *"name='cam.monitoria.agent'"* && "$badging" == *"versionCode='2'"* && "$badging" == *"versionName='0.3.1'"* ]]
+          if "$tools/apksigner" verify "$apk" >/dev/null 2>&1; then
+            echo "::error::Unexpected signed APK in unsigned qualification"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/v109-conventional-unsigned"
+          cp "$apk" "$RUNNER_TEMP/v109-conventional-unsigned/MonitorIA-Android-0.3.1-UNSIGNED-NOT-FOR-INSTALL.apk"
+      - name: Preserve unsigned candidate in unpublished qualification draft only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag=qual-v109-339046a946a8-android-conventional-unsigned
+          test "$(gh api repos/BigCorps/MonitorIA-Downloads --jq .private)" = false
+          existing="$(gh api --method GET "repos/$GITHUB_REPOSITORY/releases" -f per_page=100 --paginate --jq ".[] | select(.tag_name == \"$tag\") | .id")"
+          [[ -z "$existing" ]] || { echo 'Qualification draft already exists'; exit 1; }
+          cd "$RUNNER_TEMP/v109-conventional-unsigned"
+          apk=MonitorIA-Android-0.3.1-UNSIGNED-NOT-FOR-INSTALL.apk
+          jq -n --arg sha "$MONITORIA_SOURCE_SHA" --arg workflow "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" '{package:"cam.monitoria.agent",versionName:"0.3.1",versionCode:2,sourceCommit:$sha,workflowCommit:$workflow,workflowRun:$run,qualification:"compile-lint-jvm-only",signature:"missing",installValidation:"pending",distribution:"not-for-install"}' > QUALIFICATION.json
+          sha256sum "$apk" QUALIFICATION.json > SHA256SUMS.txt
+          gh release create "$tag" "$apk" QUALIFICATION.json SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --prerelease --title 'UNSIGNED — MonitorIA Android 0.3.1 qualification only' --notes 'Não instalar, publicar ou distribuir. Assinatura persistente original e teste de instalação ainda pendentes.' >/dev/null
+          record="$(gh api --method GET "repos/$GITHUB_REPOSITORY/releases" -f per_page=100 --paginate --jq ".[] | select(.tag_name == \"$tag\")")"
+          jq -e --arg sha "$GITHUB_SHA" '.draft == true and .prerelease == true and .published_at == null and .target_commitish == $sha and (.assets|length)==3' <<< "$record" >/dev/null
+          for file in "$apk" QUALIFICATION.json SHA256SUMS.txt; do
+            digest="$(sha256sum "$file" | cut -d' ' -f1)"
+            jq -e --arg file "$file" --arg digest "sha256:$digest" 'any(.assets[];.name==$file and .digest==$digest and .state=="uploaded")' <<< "$record" >/dev/null
+          done
+          echo "Unsigned qualification draft verified; not for installation."
+      - if: always()
+        run: rm -rf private-src "$RUNNER_TEMP/v109-conventional-unsigned"
