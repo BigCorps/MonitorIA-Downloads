@@ -80,11 +80,27 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $candidate = Join-Path $env:RUNNER_TEMP 'MonitorIA-Protect-Piloto-Setup.exe'
           $log = Join-Path $env:RUNNER_TEMP 'protect-sign.log'
+          $required = @('ESIGNER_USERNAME','ESIGNER_PASSWORD','ESIGNER_CREDENTIAL_ID','ESIGNER_TOTP_SECRET')
+          $missing = @($required | Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) })
+          if ($missing.Count) { throw ('Downloads signing configuration unavailable: ' + ($missing -join ', ')) }
+          $signTool = $env:CODE_SIGN_TOOL_PATH
+          if (-not $signTool) { $signTool = $env:CODESIGNTOOL_PATH }
+          if (-not $signTool -or -not (Test-Path -LiteralPath (Join-Path $signTool 'CodeSignTool.bat'))) {
+            throw 'The SSL.com action did not make its Windows CLI available.'
+          }
           try {
             & ./scripts/sign-inno-authenticode.ps1 $candidate *> $log
             $signature = Get-AuthenticodeSignature -LiteralPath $candidate
             if ($signature.Status -ne 'Valid' -or -not $signature.TimeStamperCertificate) { throw 'Authenticode verification failed.' }
-          } catch { throw 'Existing eSigner signing or verification failed. No release was staged.' }
+          } catch {
+            # The helper invokes vendor code with credentials. Never print its transcript.
+            $message = $_.Exception.Message
+            if ($message -match '\(exit (-?[0-9]+)\)') { $reason = "vendor exit code $($Matches[1])" }
+            elseif ($message -match 'carimbo de tempo') { $reason = 'timestamp missing' }
+            elseif ($message -match 'Authenticode') { $reason = 'Authenticode verification failed' }
+            else { $reason = 'the signing helper stopped before producing a verifiable executable' }
+            throw "SSL.com signing failed: $reason. No release was staged."
+          }
           finally { Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue }
 
       - name: Qualify signed installer under native Windows PowerShell 5.1
@@ -99,6 +115,7 @@ jobs:
             & ./protect/pilot/qa/Test-WindowsPackage.ps1 -Setup $candidate -PreviousSetup $previous *> $log
             Get-Content -LiteralPath $log | Select-String '^Installed and upgraded, parsed with'
             $hash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+            Write-Host "Signed installer SHA-256: $hash"
             Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'SHA256SUMS.txt') -Value "$hash  MonitorIA-Protect-Piloto-Setup.exe" -Encoding ASCII
           } catch { throw 'Signed package failed final qualification. Nothing was published.' }
           finally { Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue }
