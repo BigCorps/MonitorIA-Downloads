@@ -1,0 +1,59 @@
+name: Protect commercial Windows pairing qualification
+
+on:
+  push:
+    branches: [ci/protect-commercial-pairing-qa]
+    paths:
+      - '.github/workflows/qualify-protect-commercial-pairing.yml'
+      - 'build-requests/protect-commercial-pairing-qa.txt'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: protect-commercial-pairing-qualification
+  cancel-in-progress: false
+
+env:
+  MONITORIA_SOURCE_SHA: b46d6d932d5bdfb8fba2b94b0d7aeed04c62a432
+  PROTECT_QA_API: https://monitoria-pairing-qa-ithiels-projects.vercel.app/api/protect/installation
+
+jobs:
+  windows:
+    if: github.repository == 'BigCorps/MonitorIA-Downloads'
+    runs-on: windows-2022
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - name: Check out pinned private source
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          repository: BigCorps/MonitorIA
+          ref: ${{ env.MONITORIA_SOURCE_SHA }}
+          token: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+          path: private-src
+          persist-credentials: false
+          show-progress: false
+
+      - name: Build commercial QA package
+        working-directory: private-src
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($PSVersionTable.PSEdition -ne 'Desktop' -or $PSVersionTable.PSVersion.ToString() -notlike '5.1.*') {
+            throw 'Native Windows PowerShell 5.1 is required.'
+          }
+          if ((git rev-parse HEAD).Trim() -cne $env:MONITORIA_SOURCE_SHA) { throw 'Wrong source revision.' }
+          choco install nsis -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed.' }
+          $compiler = Join-Path ${env:ProgramFiles(x86)} 'NSIS\makensis.exe'
+          $candidate = Join-Path $env:RUNNER_TEMP 'MonitorIA-Protect-Commercial-QA.exe'
+          & $compiler /V2 "/DOUTPUT=$candidate" "/DPROTECT_COMMERCIAL_API=$env:PROTECT_QA_API" protect/pilot/Setup.nsi
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $candidate)) { throw 'Commercial QA package compilation failed.' }
+
+      - name: Validate installed commercial pairing
+        working-directory: private-src
+        run: |
+          $candidate = Join-Path $env:RUNNER_TEMP 'MonitorIA-Protect-Commercial-QA.exe'
+          & ./protect/pilot/qa/Test-WindowsCommercialPairing.ps1 -Setup $candidate -ExpectedApi $env:PROTECT_QA_API
