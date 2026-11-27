@@ -208,7 +208,8 @@ jobs:
           umask 077
           log="$RUNNER_TEMP/v109-linux-private.log"
           trap 'rm -f "$log"' EXIT
-          if ! (
+          trap 'echo "::error::Private Linux build or upgrade failed"' ERR
+          (
             set -euo pipefail
             curl -fsSL "https://github.com/BigCorps/MonitorIA-Downloads/releases/download/agent-v1.0.6/monitoria-agent-linux-$ARCH.tar.gz" -o "$RUNNER_TEMP/baseline.tar.gz"
             curl -fsSL "https://github.com/bluenviron/mediamtx/releases/download/v1.21.1/mediamtx_v1.21.1_linux_$BRIDGE.tar.gz" -o "$RUNNER_TEMP/bridge.tar.gz"
@@ -230,10 +231,7 @@ jobs:
               sleep 0.5
             done
             grep -F 'MonitorIA Agent v1.0.9' <<< "$status"
-          ) >"$log" 2>&1; then
-            echo "::error::Private Linux build or upgrade failed"
-            exit 1
-          fi
+          ) >"$log" 2>&1
       - name: Sign manifest and stage Linux draft
         env:
           GH_TOKEN: ${{ github.token }}
@@ -301,7 +299,8 @@ jobs:
           trap 'rm -f "$key" "$log"' EXIT
           printf '%s' "$KEYSTORE" | base64 --decode > "$key"
           unset KEYSTORE
-          if ! (
+          trap 'echo "::error::Private Android validation or signing failed"' ERR
+          (
             set -euo pipefail
             fingerprint="$(keytool -exportcert -keystore "$key" -alias "$KEY_ALIAS" -storepass:env STORE_PASSWORD | sha256sum | cut -d' ' -f1)"
             expected="$(printf '%s' "$EXPECTED_CERT_SHA256" | tr -d ':' | tr '[:upper:]' '[:lower:]')"
@@ -313,10 +312,7 @@ jobs:
             cp app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/final/$FILENAME"
             MONITORIA_ANDROID_RELEASE_CHANNEL="$CHANNEL" python3 tools/verify-release.py "$RUNNER_TEMP/final/$FILENAME"
             jq -e --arg sha "$MONITORIA_SOURCE_SHA" --argjson version "$VERSION" '.sourceCommit == $sha and .versionCode == $version' "$RUNNER_TEMP/final/VERIFIED-RELEASE.json"
-          ) >"$log" 2>&1; then
-            echo "::error::Private Android validation or signing failed"
-            exit 1
-          fi
+          ) >"$log" 2>&1
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
