@@ -10,7 +10,7 @@ concurrency:
   group: monitoria-daily-reports-private-validation
   cancel-in-progress: false
 env:
-  MONITORIA_SOURCE_SHA: 78f5055c7b84143b17159e873981d70a73055051
+  MONITORIA_SOURCE_SHA: 1f19e616f15dce6b2f5b3fc4450d108da60740b1
   NEXT_PUBLIC_APP_URL: http://localhost:3000
   APP_URL: http://localhost:3000
   NEXT_PUBLIC_SUPABASE_URL: https://ci-placeholder.supabase.co
@@ -66,6 +66,7 @@ jobs:
           # Output only allowlisted numeric TAP totals. No private source or test names.
           grep -E '^# (tests|suites|pass|fail|cancelled|skipped|todo) [0-9]+$' "$RUNNER_TEMP/reports-tests.log" || true
           grep -E '^# daily-report-fixture-stage=(fixture|migrations|fiscal-coverage|generation-claim|generation-finish|preferences|delivery-claim|revocation|refresh|rls|cascade) sqlstate=([A-Z0-9]{5}|other)$' "$RUNNER_TEMP/reports-tests.log" || true
+          grep -E '^# daily-report-migration=(state|worker) line=[0-9]+ internal=[0-9]+ identifier=(range_agg|tstzrange|gen_random_uuid|daily_report_[a-z_]+|current_session_meets_mfa_policy|aviso_expected_push_origin|is_org_member|user_effective_mfa_required|require_monitoria_service_role|auth.uid|operator does not exist|unknown)$' "$RUNNER_TEMP/reports-tests.log" || true
           if [ "$result" -ne 0 ]; then echo "::error::Focused tests failed; private diagnostics not published"; fi
           exit "$result"
       - name: TypeScript validation
