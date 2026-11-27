@@ -42,8 +42,12 @@ jobs:
             done
             test "$(openssl pkey -pubin -in RELEASE-PUBLIC-KEY.pem -outform DER | sha256sum | cut -d' ' -f1)" = 2e0c9b2eb9fce9cdc29e278f7f519d48d517fff7140d80c9a8cb649226574eff
             openssl pkeyutl -verify -rawin -pubin -inkey RELEASE-PUBLIC-KEY.pem -in SHA256SUMS.txt -sigfile SHA256SUMS.sig
-            grep -Fx "$digest  $filename" SHA256SUMS.txt
-            grep '  RELEASE-MANIFEST.json$' SHA256SUMS.txt | sha256sum -c
+            # Signature is checked on original bytes; normalize only the parsed checksums.
+            tr -d '\r' < SHA256SUMS.txt > normalized-sums.txt
+            awk -v h="$digest" -v n="$filename" '$1==h && ($2==n || $2=="*"n) {found++} END {exit found!=1}' normalized-sums.txt || { echo "Signed binary hash mismatch: $channel"; exit 1; }
+            manifest_hash="$(awk '$2=="RELEASE-MANIFEST.json" || $2=="*RELEASE-MANIFEST.json" {print $1}' normalized-sums.txt)"
+            test "$manifest_hash" = "$(sha256sum RELEASE-MANIFEST.json | cut -d' ' -f1)" || { echo "Manifest hash mismatch: $channel"; exit 1; }
+            echo "Verified signed checksums: $channel"
             jq -e --arg channel "$channel" '.channel==$channel and .version=="1.0.9" and .sourceCommit=="339046a946a884d898fb9120c7e109b4c5798c35"' RELEASE-MANIFEST.json >/dev/null
             cd ..
           done < approved.tsv
