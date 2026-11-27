@@ -1,0 +1,167 @@
+name: Protect 0.4.4 Windows qualification
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ci/protect-windows-044]
+    paths:
+      - '.github/workflows/qualify-protect-windows-044.yml'
+      - 'build-requests/protect-windows-044.txt'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: protect-windows-044-qualification
+  cancel-in-progress: false
+
+env:
+  MONITORIA_SOURCE_SHA: 342383b4824961c8b1b94103bb2da48c6c69089a
+  PROTECT_DRAFT_TAG: protect-windows-0.4.4-homologacao
+
+jobs:
+  windows:
+    if: github.repository == 'BigCorps/MonitorIA-Downloads' && github.ref == 'refs/heads/ci/protect-windows-044'
+    runs-on: windows-2022
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - name: Check out reviewed private source
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          repository: BigCorps/MonitorIA
+          ref: ${{ env.MONITORIA_SOURCE_SHA }}
+          token: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+          path: private-src
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify native PowerShell and pinned source
+        shell: powershell
+        working-directory: private-src
+        run: |
+          if ($PSVersionTable.PSEdition -ne 'Desktop' -or $PSVersionTable.PSVersion.ToString() -notlike '5.1.*') {
+            throw 'Windows PowerShell 5.1 is required.'
+          }
+          if ((git rev-parse HEAD).Trim() -cne $env:MONITORIA_SOURCE_SHA) { throw 'Wrong source revision.' }
+          Write-Host "Native PowerShell $($PSVersionTable.PSVersion), source SHA verified."
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+
+      - name: Test camera Agent and Protect ingress regressions
+        shell: pwsh
+        working-directory: private-src
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $log = Join-Path $env:RUNNER_TEMP 'protect-regressions.log'
+          try {
+            npm ci --no-audit --no-fund *> $log
+            if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
+            node --import tsx --test test/agent-0103-release-candidate-contract.test.ts test/agent-windows-dvr-channels.test.ts test/agent-onvif-incomplete-dvr-channels.test.ts test/protect-pilot-proxy.test.ts test/protect-pilot-push.test.ts *> $log
+            if ($LASTEXITCODE -ne 0) { throw 'Camera Agent or Protect regression test failed.' }
+            Get-Content -LiteralPath $log | Select-String '^# (tests|pass|fail) [0-9]+$'
+          } finally { Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue }
+
+      - name: Compile unsigned qualification candidate
+        shell: powershell
+        working-directory: private-src
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'protect-build.log'
+          try {
+            choco install nsis -y --no-progress *> $log
+            if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed.' }
+            $compiler = Join-Path ${env:ProgramFiles(x86)} 'NSIS\makensis.exe'
+            $output = Join-Path $env:RUNNER_TEMP 'MonitorIA-Protect-Piloto-Setup.exe'
+            & $compiler /V2 "/DOUTPUT=$output" protect/pilot/Setup.nsi *> $log
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $output)) { throw 'Protect installer compilation failed.' }
+          } finally { Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue }
+
+      - name: Qualify installed package under powershell.exe 5.1
+        shell: powershell
+        working-directory: private-src
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $diagnostics = Join-Path $env:RUNNER_TEMP 'protect-qa-diagnostics'
+          $null = New-Item -Path $diagnostics -ItemType Directory -Force
+          $candidate = Join-Path $env:RUNNER_TEMP 'MonitorIA-Protect-Piloto-Setup.exe'
+          $previous = (Resolve-Path 'protect/pilot/artifacts/MonitorIA-Protect-Piloto-Setup.exe').Path
+          $powershell = Join-Path $PSHOME 'powershell.exe'
+          $process = Start-Process -FilePath $powershell -PassThru -Wait -ArgumentList @(
+            '-NoProfile','-NonInteractive','-File','./protect/pilot/qa/Test-WindowsPackage.ps1',
+            '-Setup',('"{0}"' -f $candidate),'-PreviousSetup',('"{0}"' -f $previous),'-DiagnosticsDirectory',('"{0}"' -f $diagnostics)
+          ) -RedirectStandardOutput (Join-Path $diagnostics 'stdout.txt') -RedirectStandardError (Join-Path $diagnostics 'stderr.txt')
+          Set-Content -LiteralPath (Join-Path $diagnostics 'exit-code.txt') -Value $process.ExitCode -Encoding ASCII
+          Get-Content -LiteralPath (Join-Path $diagnostics 'stdout.txt') | Select-String '^(Window startup:|Window proof:|Installed and upgraded, parsed with)'
+          if ($process.ExitCode -ne 0) { throw "Installed package QA failed with exit code $($process.ExitCode). See protected diagnostics." }
+
+      - name: Record non-sensitive qualification results
+        if: always()
+        shell: powershell
+        env:
+          PROTECT_QA_ARTIFACT_KEY: ${{ secrets.PROTECT_QA_ARTIFACT_KEY }}
+        run: |
+          $directory = Join-Path $env:RUNNER_TEMP 'protect-qa-diagnostics'
+          $report = Join-Path $env:RUNNER_TEMP 'protect-qualification-summary.txt'
+          $available = -not [string]::IsNullOrWhiteSpace($env:PROTECT_QA_ARTIFACT_KEY)
+          Set-Content -LiteralPath $report -Value "Artifact encryption key available to this job: $available"
+          $log = Join-Path $directory 'stdout.txt'
+          if (Test-Path -LiteralPath $log) {
+            $pattern = '^(Window startup: explicitShow=(True|False), win32Error=[0-9]+\.|Window proof: sample=[0-9]+, functional=(True|False), interactive=(True|False), inputDesktop=(True|False), visible=(True|False), qualified=(True|False)\.|Functional UI initialization confirmed\. Interactive visual qualification: (True|False)\.)$'
+            Get-Content -LiteralPath $log | Where-Object { $_ -match $pattern } | Add-Content -LiteralPath $report
+          }
+          $exitCode = Join-Path $directory 'exit-code.txt'
+          if (Test-Path -LiteralPath $exitCode) {
+            $code = Get-Content -LiteralPath $exitCode -Raw
+            if ($code.Trim() -match '^[0-9-]+$') { Add-Content -LiteralPath $report -Value "Qualification exit code: $($code.Trim())" }
+          }
+          Get-Content -LiteralPath $report
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: protect-windows-safe-summary
+          path: ${{ runner.temp }}/protect-qualification-summary.txt
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Encrypt diagnostic artifact
+        if: always()
+        shell: bash
+        env:
+          PROTECT_QA_ARTIFACT_KEY: ${{ secrets.PROTECT_QA_ARTIFACT_KEY }}
+        run: |
+          set -euo pipefail
+          runner="$(cygpath -u "$RUNNER_TEMP")"
+          test -d "$runner/protect-qa-diagnostics" || exit 0
+          test -n "$PROTECT_QA_ARTIFACT_KEY" || { echo "PROTECT_QA_ARTIFACT_KEY is unavailable in this job; only the safe summary can be uploaded."; exit 1; }
+          tar -C "$runner/protect-qa-diagnostics" -czf - . | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:PROTECT_QA_ARTIFACT_KEY -out "$runner/protect-diagnostics.tar.gz.enc"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: protect-windows-diagnostics
+          path: ${{ runner.temp }}/protect-diagnostics.tar.gz.enc
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Seal the qualified unsigned candidate
+        shell: bash
+        env:
+          PROTECT_QA_ARTIFACT_KEY: ${{ secrets.PROTECT_QA_ARTIFACT_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$PROTECT_QA_ARTIFACT_KEY" || { echo "PROTECT_QA_ARTIFACT_KEY is unavailable in this job; only the safe summary can be uploaded."; exit 1; }
+          cd "$(cygpath -u "$RUNNER_TEMP")"
+          sha256sum MonitorIA-Protect-Piloto-Setup.exe > candidate.sha256
+          printf '%s\n' "$MONITORIA_SOURCE_SHA" > source.sha
+          tar -czf - MonitorIA-Protect-Piloto-Setup.exe candidate.sha256 source.sha | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:PROTECT_QA_ARTIFACT_KEY -out protect-candidate.tar.gz.enc
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: protect-qualified-candidate
+          path: ${{ runner.temp }}/protect-candidate.tar.gz.enc
+          retention-days: 7
+          if-no-files-found: error
