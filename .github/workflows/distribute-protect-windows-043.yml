@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  MONITORIA_SOURCE_SHA: 02ed5d2d7429b394e76415d5f5cd40e42ee7f314
+  MONITORIA_SOURCE_SHA: d15aed8c6544b50b370272237ecf181dd4771833
   PROTECT_DRAFT_TAG: protect-windows-0.4.3-homologacao
 
 jobs:

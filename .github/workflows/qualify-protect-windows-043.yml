@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  MONITORIA_SOURCE_SHA: 02ed5d2d7429b394e76415d5f5cd40e42ee7f314
+  MONITORIA_SOURCE_SHA: d15aed8c6544b50b370272237ecf181dd4771833
   PROTECT_DRAFT_TAG: protect-windows-0.4.3-homologacao
 
 jobs:
@@ -97,6 +97,36 @@ jobs:
           Get-Content -LiteralPath (Join-Path $diagnostics 'stdout.txt') | Select-String '^(Window proof:|Installed and upgraded, parsed with)'
           if ($process.ExitCode -ne 0) { throw "Installed package QA failed with exit code $($process.ExitCode). See protected diagnostics." }
 
+      - name: Record non-sensitive qualification results
+        if: always()
+        shell: powershell
+        env:
+          PROTECT_QA_ARTIFACT_KEY: ${{ secrets.PROTECT_QA_ARTIFACT_KEY }}
+        run: |
+          $directory = Join-Path $env:RUNNER_TEMP 'protect-qa-diagnostics'
+          $report = Join-Path $env:RUNNER_TEMP 'protect-qualification-summary.txt'
+          $available = -not [string]::IsNullOrWhiteSpace($env:PROTECT_QA_ARTIFACT_KEY)
+          Set-Content -LiteralPath $report -Value "Artifact encryption key available to this job: $available"
+          $log = Join-Path $directory 'stdout.txt'
+          if (Test-Path -LiteralPath $log) {
+            $pattern = '^(Window proof: sample=[0-9]+, functional=(True|False), interactive=(True|False), inputDesktop=(True|False), visible=(True|False), qualified=(True|False)\.|Functional UI initialization confirmed\. Interactive visual qualification: (True|False)\.)$'
+            Get-Content -LiteralPath $log | Where-Object { $_ -match $pattern } | Add-Content -LiteralPath $report
+          }
+          $exitCode = Join-Path $directory 'exit-code.txt'
+          if (Test-Path -LiteralPath $exitCode) {
+            $code = Get-Content -LiteralPath $exitCode -Raw
+            if ($code.Trim() -match '^[0-9-]+$') { Add-Content -LiteralPath $report -Value "Qualification exit code: $($code.Trim())" }
+          }
+          Get-Content -LiteralPath $report
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: protect-windows-safe-summary
+          path: ${{ runner.temp }}/protect-qualification-summary.txt
+          retention-days: 7
+          if-no-files-found: error
+
       - name: Encrypt diagnostic artifact
         if: always()
         shell: bash
@@ -106,7 +136,7 @@ jobs:
           set -euo pipefail
           runner="$(cygpath -u "$RUNNER_TEMP")"
           test -d "$runner/protect-qa-diagnostics" || exit 0
-          test -n "$PROTECT_QA_ARTIFACT_KEY"
+          test -n "$PROTECT_QA_ARTIFACT_KEY" || { echo "PROTECT_QA_ARTIFACT_KEY is unavailable in this job; only the safe summary can be uploaded."; exit 1; }
           tar -C "$runner/protect-qa-diagnostics" -czf - . | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:PROTECT_QA_ARTIFACT_KEY -out "$runner/protect-diagnostics.tar.gz.enc"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -123,7 +153,7 @@ jobs:
           PROTECT_QA_ARTIFACT_KEY: ${{ secrets.PROTECT_QA_ARTIFACT_KEY }}
         run: |
           set -euo pipefail
-          test -n "$PROTECT_QA_ARTIFACT_KEY"
+          test -n "$PROTECT_QA_ARTIFACT_KEY" || { echo "PROTECT_QA_ARTIFACT_KEY is unavailable in this job; only the safe summary can be uploaded."; exit 1; }
           cd "$(cygpath -u "$RUNNER_TEMP")"
           sha256sum MonitorIA-Protect-Piloto-Setup.exe > candidate.sha256
           printf '%s\n' "$MONITORIA_SOURCE_SHA" > source.sha
