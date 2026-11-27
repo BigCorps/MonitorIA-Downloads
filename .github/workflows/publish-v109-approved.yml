@@ -1,0 +1,59 @@
+name: Publish approved MonitorIA v109 signed downloads
+on:
+  push:
+    branches: [ci/v109-publish-approved]
+    paths: ['.github/workflows/publish-v109-approved.yml']
+permissions:
+  contents: write
+concurrency:
+  group: monitoria-v109-approved-publication
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.repository == 'BigCorps/MonitorIA-Downloads' && github.actor == 'BigCorps' && github.ref == 'refs/heads/ci/v109-publish-approved'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: BigCorps/MonitorIA-Downloads
+    steps:
+      - name: Verify all existing signed candidates before publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/v109-publish"
+          cd "$RUNNER_TEMP/v109-publish"
+          cat > approved.tsv <<'EOF'
+          461087894	windows-247	802153908	MonitorIA-Setup.exe	2325210183404d6da5010ab329794844f01b853f49cf7337ba194cc7ac081066	Windows 24/7 — 1.0.9
+          461072932	linux-x64	802091727	monitoria-agent-linux-x64-1.0.9.tar.gz	cd174f2255a8563849eb066c2539d4d51e416ca706abd169ac36e9744bf7f71c	Linux x64 — 1.0.9
+          461072966	linux-arm64	802091886	monitoria-agent-linux-arm64-1.0.9.tar.gz	13a21b09b517d6916e5b530fff98216826b62ead2db0cc6a4c74e1116247f2ae	Linux ARM64 — 1.0.9
+          461124650	android-conventional	802308468	MonitorIA-Android-0.3.1.apk	0224d0b1ee89e360d5b8d1842a1d6b04284a8bb682b238da0cde55cd08ee6f56	Android convencional — 0.3.1
+          461072950	android-pdv	802091809	MonitorIA-Android-PDV-0.2.22-private.apk	d2f62d6ec5d1c162b13ca057ff63a7680002c444e0332be018a8c7e9e3e298e6	Android PDV integrado — 0.2.22
+          EOF
+          while IFS=$'\t' read -r id channel asset filename digest title; do
+            tag="rc-v109-339046a946a8-$channel"
+            mkdir -p "$channel"
+            cd "$channel"
+            gh api "repos/$GH_REPO/releases/$id" > record.json
+            jq -e --arg tag "$tag" --argjson asset "$asset" --arg filename "$filename" --arg digest "sha256:$digest" '.draft and .prerelease and .tag_name==$tag and .target_commitish=="f3bf7086c5200093ba0318469772937fa19261cb" and any(.assets[];.id==$asset and .name==$filename and .digest==$digest and .state=="uploaded")' record.json >/dev/null
+            for name in SHA256SUMS.txt SHA256SUMS.sig RELEASE-PUBLIC-KEY.pem RELEASE-MANIFEST.json; do
+              aid="$(jq -er --arg name "$name" '.assets[]|select(.name==$name)|.id' record.json)"
+              gh api "repos/$GH_REPO/releases/assets/$aid" -H 'Accept: application/octet-stream' > "$name"
+            done
+            test "$(openssl pkey -pubin -in RELEASE-PUBLIC-KEY.pem -outform DER | sha256sum | cut -d' ' -f1)" = 2e0c9b2eb9fce9cdc29e278f7f519d48d517fff7140d80c9a8cb649226574eff
+            openssl pkeyutl -verify -rawin -pubin -inkey RELEASE-PUBLIC-KEY.pem -in SHA256SUMS.txt -sigfile SHA256SUMS.sig
+            grep -Fx "$digest  $filename" SHA256SUMS.txt
+            grep '  RELEASE-MANIFEST.json$' SHA256SUMS.txt | sha256sum -c
+            jq -e --arg channel "$channel" '.channel==$channel and .version=="1.0.9" and .sourceCommit=="339046a946a884d898fb9120c7e109b4c5798c35"' RELEASE-MANIFEST.json >/dev/null
+            cd ..
+          done < approved.tsv
+          # All five were signed and verified before publishing any. Store stays private/draft.
+          while IFS=$'\t' read -r id channel asset filename digest title; do
+            tag="rc-v109-339046a946a8-$channel"
+            notes="Pacote assinado e aprovado nos testes automatizados. Homologação em equipamento real será realizada individualmente. Mantenha a versão anterior para rollback."
+            if [[ "$channel" == android-conventional ]]; then notes="$notes Android 13+. Ideal para Android Box ou PDV dedicado, ligado continuamente, conectado à rede das câmeras e à internet. Até duas câmeras previamente cadastradas; local sem outro Agent ativo."; fi
+            if [[ "$channel" == android-pdv ]]; then notes="$notes Exclusivo para integração PDV autorizada; não substitui o APK convencional."; fi
+            gh api --method PATCH "repos/$GH_REPO/releases/$id" -F draft=false -F prerelease=true -f make_latest=false -f name="MonitorIA $title" -f body="$notes" --jq '.html_url'
+            gh api "repos/$GH_REPO/releases/$id" | jq -e --argjson asset "$asset" --arg digest "sha256:$digest" '.draft==false and any(.assets[];.id==$asset and .digest==$digest)' >/dev/null
+          done < approved.tsv
+          echo 'Five downloads published; Microsoft Store untouched.'
