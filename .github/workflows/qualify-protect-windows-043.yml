@@ -91,6 +91,35 @@ jobs:
             & ./protect/pilot/qa/Test-WindowsPackage.ps1 -Setup $candidate -PreviousSetup $previous *> $log
             Get-Content -LiteralPath $log | Select-String '^Installed and upgraded, parsed with [0-9.]+, opened the UI'
           } catch {
+            $startupLog = Join-Path $env:LOCALAPPDATA 'MonitorIAProtectPilot\abertura.log'
+            $installed = Join-Path $env:LOCALAPPDATA 'MonitorIAProtectPilotApp'
+            Write-Host ("Startup log present: " + (Test-Path -LiteralPath $startupLog))
+            if (Test-Path -LiteralPath $startupLog) {
+              foreach ($entry in (Get-Content -LiteralPath $startupLog -Tail 4)) {
+                if ($entry -match 'linha ([0-9]+) \| ([A-Za-z]+):') {
+                  Write-Host ("Startup error at line {0}: {1}" -f $Matches[1], $Matches[2])
+                }
+              }
+            }
+            Write-Host ("Installed launcher present: " + (Test-Path -LiteralPath (Join-Path $installed 'Launch.vbs')))
+            # The installed-file qualification cleans up the failing process.
+            # Launch once under the runner to distinguish UI startup from installer launch.
+            $probe = Start-Process -FilePath "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" `
+              -ArgumentList @('-NoProfile','-STA','-ExecutionPolicy','RemoteSigned','-File',('"{0}"' -f (Join-Path $installed 'Open-Pilot.ps1'))) -PassThru
+            try {
+              for ($i = 0; $i -lt 8 -and -not $probe.HasExited; $i++) {
+                Start-Sleep -Seconds 1
+                $probe.Refresh()
+                if ($probe.MainWindowTitle -eq 'MonitorIA Protect · Piloto') { break }
+              }
+              Write-Host ("Direct launch: exited={0}, windowFound={1}" -f $probe.HasExited, ($probe.MainWindowTitle -eq 'MonitorIA Protect · Piloto'))
+              if (Test-Path -LiteralPath $startupLog) {
+                $recent = Get-Content -LiteralPath $startupLog -Tail 1
+                if ($recent -match 'linha ([0-9]+) \| ([A-Za-z]+):') {
+                  Write-Host ("Direct launch startup error at line {0}: {1}" -f $Matches[1], $Matches[2])
+                }
+              }
+            } finally { if (-not $probe.HasExited) { Stop-Process -Id $probe.Id -Force } }
             $errorType = $_.Exception.GetType().Name
             $scriptLine = $_.InvocationInfo.ScriptLineNumber
             throw "Installed package QA failed on native PowerShell 5.1: $errorType at line $scriptLine. No package was signed."
