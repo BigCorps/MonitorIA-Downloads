@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  MONITORIA_SOURCE_SHA: 64e1faa2862e65f27aaf6e856b5c830cc364fbde
+  MONITORIA_SOURCE_SHA: 705488df070b9cc14c9dd055ecdbeb376a22dcba
   PROTECT_DRAFT_TAG: protect-windows-0.4.3-homologacao
 
 jobs:
@@ -102,24 +102,11 @@ jobs:
               }
             }
             Write-Host ("Installed launcher present: " + (Test-Path -LiteralPath (Join-Path $installed 'Launch.vbs')))
-            # The installed-file qualification cleans up the failing process.
-            # Launch once under the runner to distinguish UI startup from installer launch.
-            $probe = Start-Process -FilePath "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" `
-              -ArgumentList @('-NoProfile','-STA','-ExecutionPolicy','RemoteSigned','-File',('"{0}"' -f (Join-Path $installed 'Open-Pilot.ps1'))) -PassThru
-            try {
-              for ($i = 0; $i -lt 8 -and -not $probe.HasExited; $i++) {
-                Start-Sleep -Seconds 1
-                $probe.Refresh()
-                if ($probe.MainWindowTitle -eq 'MonitorIA Protect · Piloto') { break }
-              }
-              Write-Host ("Direct launch: exited={0}, windowFound={1}" -f $probe.HasExited, ($probe.MainWindowTitle -eq 'MonitorIA Protect · Piloto'))
-              if (Test-Path -LiteralPath $startupLog) {
-                $recent = Get-Content -LiteralPath $startupLog -Tail 1
-                if ($recent -match 'linha ([0-9]+) \| ([A-Za-z]+):') {
-                  Write-Host ("Direct launch startup error at line {0}: {1}" -f $Matches[1], $Matches[2])
-                }
-              }
-            } finally { if (-not $probe.HasExited) { Stop-Process -Id $probe.Id -Force } }
+            $startupRecord = Join-Path $env:LOCALAPPDATA 'MonitorIAProtectPilot\ui-startup.json'
+            if (Test-Path -LiteralPath $startupRecord) {
+              $stage = (Get-Content -LiteralPath $startupRecord -Raw | ConvertFrom-Json).stage
+              if ($stage -in @('initializing','opening','shown')) { Write-Host "Installed UI stage: $stage" }
+            } else { Write-Host 'Installed UI stage: no-startup-record' }
             $errorType = $_.Exception.GetType().Name
             $scriptLine = $_.InvocationInfo.ScriptLineNumber
             throw "Installed package QA failed on native PowerShell 5.1: $errorType at line $scriptLine. No package was signed."
