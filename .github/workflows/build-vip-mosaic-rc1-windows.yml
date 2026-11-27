@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  VIP_SOURCE: 4513b2495c3eb0ba27413f1f8332bd27a89a8654
+  VIP_SOURCE: 58f23d87c1f4851f7328237f48b1155bc10b2ac9
 
 jobs:
   compile:
@@ -67,8 +67,14 @@ jobs:
           $log = Join-Path $env:RUNNER_TEMP vip-deps.log
           try {
             ./scripts/get-vip-mosaic-rc1-dependencies.ps1 (Join-Path $env:RUNNER_TEMP 'vip-work/dependencies') *> $log
-          } catch { throw 'VIP dependency preparation failed.' }
-          finally { Remove-Item -LiteralPath $log -ErrorAction SilentlyContinue }
+          } catch {
+            $line = Get-Content -LiteralPath $log -ErrorAction SilentlyContinue |
+              Where-Object { $_ -cmatch '^VIP_DEPENDENCY phase=[a-z0-9_]+ reason=[a-z0-9_]+ code=(?:-?[0-9]+|0x[0-9A-F]{8})$' } |
+              Select-Object -Last 1
+            if ($line) { Write-Host $line }
+            else { Write-Host 'VIP_DEPENDENCY phase=setup reason=no_sanitized_diagnostic code=0' }
+            throw 'VIP dependency preparation failed.'
+          } finally { Remove-Item -LiteralPath $log -ErrorAction SilentlyContinue }
       - name: Compile and test the approved revision
         working-directory: private-src
         run: |
