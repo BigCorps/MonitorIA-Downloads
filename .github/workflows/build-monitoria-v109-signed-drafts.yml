@@ -24,6 +24,39 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
+      - name: Check draft availability and manifest signing key before native builds
+        if: inputs.acknowledge_drafts && inputs.channel != 'validation'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SELECTED_CHANNEL: ${{ inputs.channel }}
+          MANIFEST_SIGNING_KEY_B64: ${{ secrets.MONITORIA_AGENT_RELEASE_SIGNING_KEY_B64 }}
+          TRUSTED_RELEASE_FINGERPRINT: ${{ vars.MONITORIA_AGENT_RELEASE_KEY_SHA256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$TRUSTED_RELEASE_FINGERPRINT" =~ ^[a-f0-9]{64}$ && -n "$MANIFEST_SIGNING_KEY_B64" ]]
+          umask 077
+          key="$(mktemp)"
+          trap 'rm -f "$key"' EXIT
+          printf '%s' "$MANIFEST_SIGNING_KEY_B64" | base64 --decode > "$key"
+          test "$(openssl pkey -in "$key" -pubout -outform DER | sha256sum | cut -d' ' -f1)" = "$TRUSTED_RELEASE_FINGERPRINT"
+          openssl pkey -in "$key" -text_pub -noout | grep -q 'ED25519 Public-Key:'
+          case "$SELECTED_CHANNEL" in
+            all) channels=(windows linux-x64 linux-arm64 android-pdv android-conventional) ;;
+            windows) channels=(windows) ;;
+            linux) channels=(linux-x64 linux-arm64) ;;
+            android) channels=(android-pdv android-conventional) ;;
+            *) exit 2 ;;
+          esac
+          releases="$(gh api --method GET "repos/$GITHUB_REPOSITORY/releases" -f per_page=100 --paginate --jq '.[].tag_name')"
+          for channel in "${channels[@]}"; do
+            tag="rc-v109-$(printf '%.12s' "$MONITORIA_SOURCE_SHA")-$channel"
+            refs="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$tag" --jq ".[].ref")"
+            if grep -Fxq "$tag" <<< "$releases" || grep -Fxq "refs/tags/$tag" <<< "$refs"; then
+              echo "::error::Candidate $channel already exists; use the existing draft or rerun only failed jobs."
+              exit 1
+            fi
+          done
       - name: Require private source
         env:
           GH_TOKEN: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
