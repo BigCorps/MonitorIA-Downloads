@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  MONITORIA_SOURCE_SHA: d15aed8c6544b50b370272237ecf181dd4771833
+  MONITORIA_SOURCE_SHA: 38c09aa4c97c189c726dc265b14742614b22722b
   PROTECT_DRAFT_TAG: protect-windows-0.4.3-homologacao
 
 jobs:
@@ -94,7 +94,7 @@ jobs:
             '-Setup',('"{0}"' -f $candidate),'-PreviousSetup',('"{0}"' -f $previous),'-DiagnosticsDirectory',('"{0}"' -f $diagnostics)
           ) -RedirectStandardOutput (Join-Path $diagnostics 'stdout.txt') -RedirectStandardError (Join-Path $diagnostics 'stderr.txt')
           Set-Content -LiteralPath (Join-Path $diagnostics 'exit-code.txt') -Value $process.ExitCode -Encoding ASCII
-          Get-Content -LiteralPath (Join-Path $diagnostics 'stdout.txt') | Select-String '^(Window proof:|Installed and upgraded, parsed with)'
+          Get-Content -LiteralPath (Join-Path $diagnostics 'stdout.txt') | Select-String '^(Window startup:|Window proof:|Installed and upgraded, parsed with)'
           if ($process.ExitCode -ne 0) { throw "Installed package QA failed with exit code $($process.ExitCode). See protected diagnostics." }
 
       - name: Record non-sensitive qualification results
@@ -109,7 +109,7 @@ jobs:
           Set-Content -LiteralPath $report -Value "Artifact encryption key available to this job: $available"
           $log = Join-Path $directory 'stdout.txt'
           if (Test-Path -LiteralPath $log) {
-            $pattern = '^(Window proof: sample=[0-9]+, functional=(True|False), interactive=(True|False), inputDesktop=(True|False), visible=(True|False), qualified=(True|False)\.|Functional UI initialization confirmed\. Interactive visual qualification: (True|False)\.)$'
+            $pattern = '^(Window startup: explicitShow=(True|False), win32Error=[0-9]+\.|Window proof: sample=[0-9]+, functional=(True|False), interactive=(True|False), inputDesktop=(True|False), visible=(True|False), qualified=(True|False)\.|Functional UI initialization confirmed\. Interactive visual qualification: (True|False)\.)$'
             Get-Content -LiteralPath $log | Where-Object { $_ -match $pattern } | Add-Content -LiteralPath $report
           }
           $exitCode = Join-Path $directory 'exit-code.txt'

@@ -3,3 +3,5 @@ Private source SHA 64e1faa2862e65f27aaf6e856b5c830cc364fbde.
 Disparo manual: 2026-11-27T16:44:17Z
 Diagnostico de abertura: 2026-11-27T16:48:56Z
 Validar janela: 2026-11-27T16:54:17.0332332Z
+
+Qualify 38c09aa4c97c189c726dc265b14742614b22722b: verify explicit presentation of the installed window while the shell remains hidden.
