@@ -34,13 +34,34 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$TRUSTED_RELEASE_FINGERPRINT" =~ ^[a-f0-9]{64}$ && -n "$MANIFEST_SIGNING_KEY_B64" ]]
+          if [[ -z "$MANIFEST_SIGNING_KEY_B64" ]]; then
+            echo "::error::Missing Actions secret MONITORIA_AGENT_RELEASE_SIGNING_KEY_B64 in MonitorIA-Downloads. Provision the existing trusted manifest key; do not generate a replacement or expose the private source."
+            exit 1
+          fi
+          if [[ ! "$TRUSTED_RELEASE_FINGERPRINT" =~ ^[a-f0-9]{64}$ ]]; then
+            echo "::error::Missing or invalid Actions variable MONITORIA_AGENT_RELEASE_KEY_SHA256."
+            exit 1
+          fi
           umask 077
           key="$(mktemp)"
           trap 'rm -f "$key"' EXIT
-          printf '%s' "$MANIFEST_SIGNING_KEY_B64" | base64 --decode > "$key"
-          test "$(openssl pkey -in "$key" -pubout -outform DER | sha256sum | cut -d' ' -f1)" = "$TRUSTED_RELEASE_FINGERPRINT"
-          openssl pkey -in "$key" -text_pub -noout | grep -q 'ED25519 Public-Key:'
+          if ! printf '%s' "$MANIFEST_SIGNING_KEY_B64" | base64 --decode > "$key" 2>/dev/null; then
+            echo "::error::Manifest signing secret is not valid base64."
+            exit 1
+          fi
+          if ! actual="$(openssl pkey -in "$key" -passin pass: -pubout -outform DER 2>/dev/null | sha256sum | cut -d' ' -f1)"; then
+            echo "::error::Manifest signing secret does not contain a readable unencrypted private key."
+            exit 1
+          fi
+          if [[ "$actual" != "$TRUSTED_RELEASE_FINGERPRINT" ]]; then
+            echo "::error::Manifest signing key fingerprint differs from the trusted release key."
+            exit 1
+          fi
+          if ! openssl pkey -in "$key" -passin pass: -text_pub -noout 2>/dev/null | grep -q 'ED25519 Public-Key:'; then
+            echo "::error::Expected the existing Ed25519 manifest signing key."
+            exit 1
+          fi
+          echo "Trusted manifest signing key verified."
           case "$SELECTED_CHANNEL" in
             all) channels=(windows linux-x64 linux-arm64 android-pdv android-conventional) ;;
             windows) channels=(windows) ;;
