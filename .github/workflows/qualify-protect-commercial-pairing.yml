@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  MONITORIA_SOURCE_SHA: b46d6d932d5bdfb8fba2b94b0d7aeed04c62a432
+  MONITORIA_SOURCE_SHA: ba38ad96ee57c4cc08a21cbfd96f1083c9fba0d5
   PROTECT_QA_API: https://monitoria-pairing-qa-ithiels-projects.vercel.app/api/protect/installation
 
 jobs:
