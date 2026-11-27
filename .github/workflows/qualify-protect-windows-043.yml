@@ -1,0 +1,156 @@
+name: Protect 0.4.3 Windows qualification and signed draft
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ci/protect-windows-043]
+    paths:
+      - '.github/workflows/qualify-protect-windows-043.yml'
+      - 'build-requests/protect-windows-043.txt'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: protect-windows-043-qualification
+  cancel-in-progress: false
+
+env:
+  MONITORIA_SOURCE_SHA: 64e1faa2862e65f27aaf6e856b5c830cc364fbde
+  PROTECT_DRAFT_TAG: protect-windows-0.4.3-homologacao
+
+jobs:
+  windows:
+    if: github.repository == 'BigCorps/MonitorIA-Downloads' && github.ref == 'refs/heads/ci/protect-windows-043'
+    runs-on: windows-2022
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    steps:
+      - name: Check out reviewed private source
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          repository: BigCorps/MonitorIA
+          ref: ${{ env.MONITORIA_SOURCE_SHA }}
+          token: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+          path: private-src
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify native PowerShell and pinned source
+        shell: powershell
+        working-directory: private-src
+        run: |
+          if ($PSVersionTable.PSEdition -ne 'Desktop' -or $PSVersionTable.PSVersion.ToString() -notlike '5.1.*') {
+            throw 'Windows PowerShell 5.1 is required.'
+          }
+          if ((git rev-parse HEAD).Trim() -cne $env:MONITORIA_SOURCE_SHA) { throw 'Wrong source revision.' }
+          Write-Host "Native PowerShell $($PSVersionTable.PSVersion), source SHA verified."
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+
+      - name: Test camera Agent and Protect ingress regressions
+        shell: pwsh
+        working-directory: private-src
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $log = Join-Path $env:RUNNER_TEMP 'protect-regressions.log'
+          try {
+            npm ci --no-audit --no-fund *> $log
+            if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
+            node --import tsx --test test/agent-0103-release-candidate-contract.test.ts test/agent-windows-dvr-channels.test.ts test/agent-onvif-incomplete-dvr-channels.test.ts test/protect-pilot-proxy.test.ts test/protect-pilot-push.test.ts *> $log
+            if ($LASTEXITCODE -ne 0) { throw 'Camera Agent or Protect regression test failed.' }
+            Get-Content -LiteralPath $log | Select-String '^# (tests|pass|fail) [0-9]+$'
+          } finally { Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue }
+
+      - name: Compile unsigned qualification candidate
+        shell: powershell
+        working-directory: private-src
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'protect-build.log'
+          try {
+            choco install nsis -y --no-progress *> $log
+            if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed.' }
+            $compiler = Join-Path ${env:ProgramFiles(x86)} 'NSIS\makensis.exe'
+            $output = Join-Path $env:RUNNER_TEMP 'MonitorIA-Protect-Piloto-Setup.exe'
+            & $compiler /V2 "/DOUTPUT=$output" protect/pilot/Setup.nsi *> $log
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $output)) { throw 'Protect installer compilation failed.' }
+          } finally { Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue }
+
+      - name: Qualify installed candidate under powershell.exe 5.1
+        shell: powershell
+        working-directory: private-src
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $log = Join-Path $env:RUNNER_TEMP 'protect-installed-qa.log'
+          $candidate = Join-Path $env:RUNNER_TEMP 'MonitorIA-Protect-Piloto-Setup.exe'
+          $previous = (Resolve-Path 'protect/pilot/artifacts/MonitorIA-Protect-Piloto-Setup.exe').Path
+          try {
+            & ./protect/pilot/qa/Test-WindowsPackage.ps1 -Setup $candidate -PreviousSetup $previous *> $log
+            Get-Content -LiteralPath $log | Select-String '^Installed and upgraded, parsed with [0-9.]+, opened the UI'
+          } catch {
+            $errorType = $_.Exception.GetType().Name
+            $scriptLine = $_.InvocationInfo.ScriptLineNumber
+            throw "Installed package QA failed on native PowerShell 5.1: $errorType at line $scriptLine. No package was signed."
+          } finally { Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue }
+
+      - name: Initialize existing SSL.com CodeSignTool
+        uses: sslcom/esigner-codesign@cf5f6c1d38ad10f47e3ed9aca873f429b1a8d85b
+        with:
+          command: --version
+          environment_name: PROD
+
+      - name: Sign qualified installer and verify Authenticode timestamp
+        shell: pwsh
+        working-directory: private-src
+        env:
+          ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
+          ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
+          ESIGNER_CREDENTIAL_ID: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
+          ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
+          MONITORIA_SIGN_CONTEXT: protect-windows-043-homologacao
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidate = Join-Path $env:RUNNER_TEMP 'MonitorIA-Protect-Piloto-Setup.exe'
+          $log = Join-Path $env:RUNNER_TEMP 'protect-sign.log'
+          try {
+            & ./scripts/sign-inno-authenticode.ps1 $candidate *> $log
+            $signature = Get-AuthenticodeSignature -LiteralPath $candidate
+            if ($signature.Status -ne 'Valid' -or -not $signature.TimeStamperCertificate) { throw 'Authenticode verification failed.' }
+          } catch { throw 'Existing eSigner signing or verification failed. No release was staged.' }
+          finally { Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue }
+
+      - name: Requalify the signed file and record SHA-256
+        shell: powershell
+        working-directory: private-src
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # These two locations were created by the previous isolated QA step on this disposable runner.
+          foreach ($name in @('MonitorIAProtectPilot','MonitorIAProtectPilotApp')) {
+            $fixture = Join-Path $env:LOCALAPPDATA $name
+            if (Test-Path -LiteralPath $fixture) { Remove-Item -LiteralPath $fixture -Recurse -Force }
+          }
+          $log = Join-Path $env:RUNNER_TEMP 'protect-signed-qa.log'
+          $candidate = Join-Path $env:RUNNER_TEMP 'MonitorIA-Protect-Piloto-Setup.exe'
+          $previous = (Resolve-Path 'protect/pilot/artifacts/MonitorIA-Protect-Piloto-Setup.exe').Path
+          try {
+            & ./protect/pilot/qa/Test-WindowsPackage.ps1 -Setup $candidate -PreviousSetup $previous *> $log
+            Get-Content -LiteralPath $log | Select-String '^Installed and upgraded, parsed with [0-9.]+, opened the UI'
+            $hash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+            Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'SHA256SUMS.txt') -Value "$hash  MonitorIA-Protect-Piloto-Setup.exe" -Encoding ASCII
+          } catch {
+            throw "Signed package requalification failed: $($_.Exception.GetType().Name) at line $($_.InvocationInfo.ScriptLineNumber). No release was staged."
+          } finally { Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue }
+
+      - name: Stage signed installer as an unpublished Downloads draft
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $env:RUNNER_TEMP 'MonitorIA-Protect-Piloto-Setup.exe'
+          $hash = Join-Path $env:RUNNER_TEMP 'SHA256SUMS.txt'
+          gh release create $env:PROTECT_DRAFT_TAG $exe $hash --repo BigCorps/MonitorIA-Downloads --target $env:GITHUB_SHA --draft --prerelease --title 'MonitorIA Protect 0.4.3 - homologação' --notes 'Candidato experimental para a Loja de Serviços. Distribuição restrita em rascunho.'
+          if ($LASTEXITCODE -ne 0) { throw 'Downloads draft creation failed.' }
