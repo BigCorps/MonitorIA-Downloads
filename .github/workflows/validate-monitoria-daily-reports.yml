@@ -10,7 +10,7 @@ concurrency:
   group: monitoria-daily-reports-private-validation
   cancel-in-progress: false
 env:
-  MONITORIA_SOURCE_SHA: d8603b864ca21e1550ff6827978654ea6ca6e6df
+  MONITORIA_SOURCE_SHA: 09e475c9f8b075f078029ab46c175c331d9c3f8d
   NEXT_PUBLIC_APP_URL: http://localhost:3000
   APP_URL: http://localhost:3000
   NEXT_PUBLIC_SUPABASE_URL: https://ci-placeholder.supabase.co
@@ -65,6 +65,28 @@ jobs:
           set -e
           # Output only allowlisted numeric TAP totals. No private source or test names.
           grep -E '^# (tests|suites|pass|fail|cancelled|skipped|todo) [0-9]+$' "$RUNNER_TEMP/reports-tests.log" || true
+          grep -E '^# daily-report-fixture-stage=(fixture|migrations|fiscal-coverage|generation-claim|generation-finish|preferences|delivery-claim|revocation|refresh|rls|cascade) sqlstate=([A-Z0-9]{5}|other)
+          exit "$result"
+      - name: TypeScript validation
+        if: always() && steps.install.outcome == 'success'
+        working-directory: private-src
+        run: |
+          set -euo pipefail
+          umask 077
+          test -x node_modules/.bin/tsc || { echo "::error::Dependencies unavailable"; exit 1; }
+          set +e
+          npm run check >"$RUNNER_TEMP/reports-tsc.log" 2>&1
+          result=$?
+          set -e
+          echo "TypeScript diagnostics: $(grep -cE 'error TS[0-9]+:' "$RUNNER_TEMP/reports-tsc.log" || true)"
+          echo "Report-path diagnostics: $(grep -cE '^(src/daily-reports/|app/dashboard/avisos/relatorios/|app/dashboard/search/(page|assistant-chat)\.tsx|src/pdv-legal/monitoring-sales\.ts|test/daily-reports-).*error TS[0-9]+:' "$RUNNER_TEMP/reports-tsc.log" || true)"
+          if [ "$result" -ne 0 ]; then echo "::error::TypeScript check failed; private diagnostics not published"; fi
+          exit "$result"
+      - name: Remove temporary private diagnostics
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/reports-install.log" "$RUNNER_TEMP/reports-tests.log" "$RUNNER_TEMP/reports-tsc.log"
+ "$RUNNER_TEMP/reports-tests.log" || true
           if [ "$result" -ne 0 ]; then echo "::error::Focused tests failed; private diagnostics not published"; fi
           exit "$result"
       - name: TypeScript validation
