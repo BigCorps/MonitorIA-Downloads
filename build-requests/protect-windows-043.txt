@@ -2,3 +2,4 @@ Qualify MonitorIA Protect 0.4.3 for private field testing.
 Private source SHA 64e1faa2862e65f27aaf6e856b5c830cc364fbde.
 Disparo manual: 2026-11-27T16:44:17Z
 Diagnostico de abertura: 2026-11-27T16:48:56Z
+Validar janela: 2026-11-27T16:54:17.0332332Z
