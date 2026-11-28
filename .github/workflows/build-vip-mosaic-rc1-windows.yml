@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  VIP_SOURCE: d7d51c41138c80758bb83ebb9d626215ade4092c
+  VIP_SOURCE: f153a50d8d8ba5cf67ae8bda5000ad042df0e93d
 
 jobs:
   compile:
@@ -76,6 +76,7 @@ jobs:
             throw 'VIP dependency preparation failed.'
           } finally { Remove-Item -LiteralPath $log -ErrorAction SilentlyContinue }
       - name: Compile and test the approved revision
+        id: compile
         working-directory: private-src
         run: |
           $ErrorActionPreference = 'Stop'
@@ -84,27 +85,74 @@ jobs:
           $log = Join-Path $env:RUNNER_TEMP vip-build.log
           try {
             & {
-              npm ci --ignore-scripts --no-audit --no-fund
+              Write-Output 'VIP_RC1 phase=npm_ci'
+              npm ci --include=optional --ignore-scripts --no-audit --no-fund
+              Write-Output 'VIP_RC1 phase=optional_x64'
+              node -e "if(process.platform!=='win32'||process.arch!=='x64') process.exit(2); require.resolve('@esbuild/win32-x64/package.json'); require.resolve('@img/sharp-win32-x64/package')"
               ./scripts/build-vip-mosaic-rc1.ps1 compile $work $env:VIP_DEPENDENCIES $env:VIP_DEPENDENCIES_SHA https://vip.monitoria.cam
               $env:MONITORIA_VIP_TEST_FFMPEG = Join-Path $work 'payload/tools/ffmpeg.exe'
               $env:MONITORIA_VIP_TEST_FFPROBE = Join-Path $work 'payload/tools/ffprobe.exe'
+              Write-Output 'VIP_RC1 phase=windows_tests'
               node --import tsx --test test/agent-vip-mosaic-evidence.test.ts test/vip-mosaic-fixed-capture.test.ts test/vip-mosaic-verified-capture.test.ts
             } *> $log
-          } catch { throw 'VIP compilation or Windows tests failed.' }
-          finally { Remove-Item -LiteralPath $log -ErrorAction SilentlyContinue }
+          } catch {
+            $exit = if ($_.Exception.PSObject.Properties['ExitCode']) { [int]$_.Exception.ExitCode } else { 1 }
+            $diagnostic = Get-Content -LiteralPath $log -Raw -ErrorAction SilentlyContinue
+            $lastPhase = [regex]::Matches([string]$diagnostic, '(?m)^VIP_RC1 phase=([a-z0-9_]+)\r?$') | Select-Object -Last 1
+            $phase = if ($lastPhase) { $lastPhase.Groups[1].Value } else { 'setup' }
+            Write-Host "VIP_RC1 phase=$phase exit=$exit"
+            foreach ($match in ([regex]::Matches([string]$diagnostic, '(?m)^VIP_NATIVE (?:stage=[a-z_]+ (?:exit=-?[0-9]+|reason=[A-Z0-9_]+)|(?:sdk|msvc)=[0-9.]+)\r?$') | Select-Object -Last 8)) {
+              Write-Host ($match.Value.TrimEnd())
+            }
+            $codes = [regex]::Matches([string]$diagnostic, '(?m)\b(?:LNK[0-9]{4}|C[0-9]{4}|STL[0-9]{4}|ERR_[A-Z0-9_]+|EINTEGRITY|EBADPLATFORM|ERESOLVE|EAI_AGAIN|ECONNRESET|ENOTFOUND|E404|E401|E403|EUSAGE)\b') |
+              ForEach-Object Value | Sort-Object -Unique | Select-Object -First 12
+            if ($codes) { Write-Host "VIP_RC1 codes=$($codes -join ',')" }
+            throw 'VIP compilation or Windows tests failed.'
+          }
+      - name: Preserve encrypted build diagnostics
+        if: failure() && steps.compile.outcome == 'failure'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          openssl cms -encrypt -binary -aes-256-gcm -in vip-build.log -outform DER -out vip-diagnostic.cms -recip vip-recipient.der -inform DER
+          sha256sum vip-diagnostic.cms
+      - name: Upload encrypted build diagnostics
+        if: failure() && steps.compile.outcome == 'failure'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: vip-rc1-diagnostics-${{ env.VIP_SOURCE }}
+          path: ${{ runner.temp }}/vip-diagnostic.cms
+          retention-days: 3
+          if-no-files-found: error
+      - name: Archive the verified build payload
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $work = Join-Path $env:RUNNER_TEMP vip-work
           [ordered]@{
             privateSource = $env:VIP_SOURCE
             publicWorkflow = $env:GITHUB_SHA
             runId = $env:GITHUB_RUN_ID
             dependencyManifest = $env:VIP_DEPENDENCIES_SHA
           } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $work transfer.json)
-          Compress-Archive -LiteralPath @((Join-Path $work payload), (Join-Path $work dependencies), (Join-Path $work transfer.json)) -DestinationPath (Join-Path $env:RUNNER_TEMP vip-transfer.zip)
+          $zip = Join-Path $env:RUNNER_TEMP vip-transfer.zip
+          try {
+            Compress-Archive -LiteralPath @((Join-Path $work payload), (Join-Path $work dependencies), (Join-Path $work transfer.json)) -DestinationPath $zip
+            if (!(Test-Path -LiteralPath $zip -PathType Leaf)) { throw 'Archive missing.' }
+          } catch {
+            $code = '0x{0:X8}' -f $_.Exception.HResult
+            throw "VIP_RC1 phase=archive code=$code"
+          }
       - name: Seal payload for the private signing operator
         shell: bash
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP"
-          openssl cms -encrypt -binary -aes-256-gcm -in vip-transfer.zip -outform DER -out vip-transfer.cms -recip vip-recipient.der -inform DER
+          openssl cms -encrypt -binary -aes-256-gcm -in vip-transfer.zip -outform DER -out vip-transfer.cms -recip vip-recipient.der -inform DER 2>/dev/null || {
+            status=$?
+            echo "VIP_RC1 phase=cms_transfer exit=$status" >&2
+            exit "$status"
+          }
           sha256sum vip-transfer.cms
       - name: Retain ciphertext only
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
