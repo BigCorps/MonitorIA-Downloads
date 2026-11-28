@@ -45,22 +45,25 @@ jobs:
           gh api "repos/$GH_REPO/releases/$RELEASE_ID" > release.json
           jq -e --arg tag "$RELEASE_TAG" --arg target "$RELEASE_COMMIT" --arg filename "$FILE_NAME" \
             --argjson file "$FILE_ID" --argjson manifest "$CHECKSUM_ID" --arg digest "sha256:$FILE_SHA" '
-            .draft and .tag_name == $tag and .target_commitish == $target
+            (.draft | type == "boolean") and .tag_name == $tag and .target_commitish == $target
             and any(.assets[]; .id == $file and .name == $filename and .digest == $digest and .state == "uploaded")
             and any(.assets[]; .id == $manifest and .name == "SHA256SUMS.txt" and .state == "uploaded")' release.json >/dev/null
           gh api "repos/$GH_REPO/releases/assets/$FILE_ID" -H 'Accept: application/octet-stream' > "$FILE_NAME"
           gh api "repos/$GH_REPO/releases/assets/$CHECKSUM_ID" -H 'Accept: application/octet-stream' > SHA256SUMS.txt
           tr -d '\r' < SHA256SUMS.txt | grep -Fxq "$FILE_SHA  $FILE_NAME"
           printf '%s  %s\n' "$FILE_SHA" "$FILE_NAME" | sha256sum --check
+          printf 'PROTECT_DRAFT=%s\n' "$(jq -r '.draft' release.json)" >> "$GITHUB_ENV"
 
       - name: Publish the existing draft and verify the anonymous download
         shell: bash
         run: |
           set -euo pipefail
-          gh api --method PATCH "repos/$GH_REPO/releases/$RELEASE_ID" -F draft=false -F prerelease=false \
-            -f tag_name="$RELEASE_TAG" -f make_latest=false -f name='MonitorIA Protect 1.0.0' |
-            jq -e --arg digest "sha256:$FILE_SHA" --argjson asset "$FILE_ID" '
-              .draft == false and any(.assets[]; .id == $asset and .digest == $digest)' >/dev/null
+          if [[ "$PROTECT_DRAFT" == true ]]; then
+            gh api --method PATCH "repos/$GH_REPO/releases/$RELEASE_ID" -F draft=false -F prerelease=false \
+              -f tag_name="$RELEASE_TAG" -f make_latest=false -f name='MonitorIA Protect 1.0.0' >/dev/null
+          fi
+          gh api "repos/$GH_REPO/releases/$RELEASE_ID" | jq -e --arg digest "sha256:$FILE_SHA" --argjson asset "$FILE_ID" '
+            .draft == false and .prerelease == false and any(.assets[]; .id == $asset and .digest == $digest)' >/dev/null
           cd "$(mktemp -d)"
           link="https://github.com/$GH_REPO/releases/download/$RELEASE_TAG/$FILE_NAME"
           curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
