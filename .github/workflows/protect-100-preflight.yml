@@ -34,8 +34,13 @@ jobs:
           done
           if [[ -n "$SOURCE_TOKEN" ]]; then
             test "$(GH_TOKEN="$SOURCE_TOKEN" gh api repos/BigCorps/MonitorIA --jq .private)" = true
-            test "$(GH_TOKEN="$SOURCE_TOKEN" gh api repos/BigCorps/MonitorIA/commits/ddfbe813e9f876c7e3ede49e1ac29993a35dd803 --jq .sha)" = ddfbe813e9f876c7e3ede49e1ac29993a35dd803
+            test "$(GH_TOKEN="$SOURCE_TOKEN" gh api repos/BigCorps/MonitorIA/commits/32873e70962aca5aa7b1f4a74e96b771990c9fd6 --jq .sha)" = 32873e70962aca5aa7b1f4a74e96b771990c9fd6
             echo 'Authorized private source verified.'
+            if GH_TOKEN="$SOURCE_TOKEN" gh api repos/BigCorps/MonitorIA/actions/runs/46047277723 --jq '.id' >/dev/null 2>&1; then
+              echo 'Downloads can read signing Actions metadata in private MonitorIA.'
+            else
+              echo '::warning::The private source token cannot read private signing Actions.'
+            fi
           fi
           if [[ -n "$PROTECT_QA_ARTIFACT_KEY" ]]; then
             verified="$(mktemp -d)"
