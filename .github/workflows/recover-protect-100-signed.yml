@@ -1,0 +1,82 @@
+name: Recover approved signed Protect 1.0.0 draft
+on:
+  push:
+    branches: [ci/protect-100-distribution]
+    paths: ['.github/workflows/recover-protect-100-signed.yml']
+permissions:
+  contents: read
+jobs:
+  recover:
+    if: github.repository == 'BigCorps/MonitorIA-Downloads' && github.ref == 'refs/heads/ci/protect-100-distribution'
+    runs-on: windows-2022
+    timeout-minutes: 12
+    permissions:
+      contents: write
+      actions: read
+    env:
+      SOURCE_REPO: BigCorps/MonitorIA
+      SOURCE_RUN: '46105308859'
+      SOURCE_JOB: '140856616881'
+      SOURCE_ARTIFACT: '15247545942'
+      EXPECTED_ARCHIVE_SHA: b8d67a84b8647fccfa307002cddac6930f4a5ad1595a0877bf73aab0af875097
+      EXPECTED_EXE_SHA: f69e24b82de5dca24af76a12b0392c2527ff70a3ab5c6e68d43160eb01944b93
+      DRAFT_TAG: protect-windows-1.0.0-homologacao
+    steps:
+      - name: Verify original signed qualification and recover encrypted package
+        shell: bash
+        env:
+          SOURCE_TOKEN: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          PROTECT_QA_ARTIFACT_KEY: ${{ secrets.PROTECT_QA_ARTIFACT_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$PROTECT_QA_ARTIFACT_KEY"
+          cd "$(cygpath -u "$RUNNER_TEMP")"
+          # Use only existing authorized credentials; never print tokens.
+          if [[ -n "$SOURCE_TOKEN" ]] && GH_TOKEN="$SOURCE_TOKEN" gh api "repos/$SOURCE_REPO/actions/artifacts/$SOURCE_ARTIFACT" > metadata.json 2>/dev/null; then
+            export GH_TOKEN="$SOURCE_TOKEN"
+          else
+            gh api "repos/$SOURCE_REPO/actions/artifacts/$SOURCE_ARTIFACT" > metadata.json
+          fi
+          jq -e --arg id "$SOURCE_ARTIFACT" --arg run "$SOURCE_RUN" --arg digest "sha256:$EXPECTED_ARCHIVE_SHA" '.id == ($id|tonumber) and .workflow_run.id == ($run|tonumber) and .name == "protect-signed-recovery-1.0.0-32873e70962a" and .digest == $digest and .expired == false' metadata.json >/dev/null
+          gh api "repos/$SOURCE_REPO/actions/jobs/$SOURCE_JOB" > job.json
+          jq -e --arg run "$SOURCE_RUN" '.run_id == ($run|tonumber) and ([.steps[] | select(.name == "Sign qualified installer and verify Authenticode timestamp" and .conclusion == "success")] | length) == 1 and ([.steps[] | select(.name == "Qualify signed installer under native Windows PowerShell 5.1" and .conclusion == "success")] | length) == 1' job.json >/dev/null
+          gh api "repos/$SOURCE_REPO/actions/artifacts/$SOURCE_ARTIFACT/zip" > signed.zip
+          printf '%s  signed.zip\n' "$EXPECTED_ARCHIVE_SHA" | sha256sum --check
+          mkdir signed-recovered
+          unzip -p signed.zip protect-signed-recovery.tar.gz.enc | openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:PROTECT_QA_ARTIFACT_KEY | tar -xzf - -C signed-recovered -- MonitorIA-Protect-1.0.0-Setup.exe SHA256SUMS.txt
+          cd signed-recovered
+          printf '%s  MonitorIA-Protect-1.0.0-Setup.exe\n' "$EXPECTED_EXE_SHA" | sha256sum --check
+          sha256sum --check SHA256SUMS.txt
+          echo 'Previously signed and qualified executable recovered intact.'
+      - name: Verify Authenticode and official signer again without signing
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $env:RUNNER_TEMP 'signed-recovered/MonitorIA-Protect-1.0.0-Setup.exe'
+          $reference = Join-Path $env:RUNNER_TEMP 'MonitorIA-Agent-1.0.9-Reference.exe'
+          Invoke-WebRequest -Uri 'https://github.com/BigCorps/MonitorIA-Downloads/releases/download/rc-v109-339046a946a8-windows-247/MonitorIA-Setup.exe' -OutFile $reference
+          if ((Get-FileHash -LiteralPath $reference -Algorithm SHA256).Hash -ine '2325210183404d6da5010ab329794844f01b853f49cf7337ba194cc7ac081066') { throw 'Reference hash mismatch.' }
+          $ref = Get-AuthenticodeSignature -LiteralPath $reference
+          $sig = Get-AuthenticodeSignature -LiteralPath $exe
+          if ($ref.Status -ne 'Valid' -or -not $ref.TimeStamperCertificate -or $sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate -or $sig.SignerCertificate.Thumbprint -ine $ref.SignerCertificate.Thumbprint) { throw 'Official signer or timestamp verification failed.' }
+          if ((Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash -ine $env:EXPECTED_EXE_SHA) { throw 'Signed file hash mismatch.' }
+          Remove-Item -LiteralPath $reference -Force
+          Write-Host 'Official certificate, timestamp and signed hash verified.'
+      - name: Stage restricted draft in Downloads only
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'signed-recovered'
+          $exe = Join-Path $root 'MonitorIA-Protect-1.0.0-Setup.exe'
+          $hash = Join-Path $root 'SHA256SUMS.txt'
+          gh release create $env:DRAFT_TAG $exe $hash --repo BigCorps/MonitorIA-Downloads --target 12108834b8ef283192e32635ec1840f14d0cbf7b --draft --prerelease --title 'MonitorIA Protect 1.0.0 - homologação' --notes 'Candidato comercial assinado e homologado. Rascunho restrito; não publicar antes dos gates comerciais e autorização de lançamento.'
+          if ($LASTEXITCODE -ne 0) { throw 'Draft creation failed. Original encrypted signed recovery is preserved.' }
+      - name: Remove recovered executable from runner
+        if: always()
+        shell: pwsh
+        run: |
+          Remove-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'signed-recovered') -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'signed.zip') -Force -ErrorAction SilentlyContinue
