@@ -1,8 +1,8 @@
-name: Protect 1.0 Windows qualification
+name: Protect 1.0 Windows qualification with 0.4.4 migration
 
 on:
   push:
-    branches: [ci/protect-windows-100]
+    branches: [ci/protect-100-upgrade]
     paths: ['.github/workflows/qualify-protect-windows-100.yml', 'build-requests/protect-windows-100.txt']
   workflow_dispatch:
 
@@ -14,12 +14,12 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  MONITORIA_SOURCE_SHA: ddfbe813e9f876c7e3ede49e1ac29993a35dd803
+  MONITORIA_SOURCE_SHA: 32873e70962aca5aa7b1f4a74e96b771990c9fd6
   PROTECT_API: https://monitoria.cam/api/protect/installation
 
 jobs:
   windows:
-    if: github.repository == 'BigCorps/MonitorIA-Downloads' && github.ref == 'refs/heads/ci/protect-windows-100'
+    if: github.repository == 'BigCorps/MonitorIA-Downloads' && github.ref == 'refs/heads/ci/protect-100-upgrade'
     runs-on: windows-2022
     timeout-minutes: 20
     defaults:
@@ -35,7 +35,16 @@ jobs:
           persist-credentials: false
           show-progress: false
 
-      - name: Build unsigned commercial candidate
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          repository: BigCorps/MonitorIA
+          ref: 342383b4824961c8b1b94103bb2da48c6c69089a
+          token: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+          path: pilot-src
+          persist-credentials: false
+          show-progress: false
+
+      - name: Build unsigned commercial candidate and historical 0.4.4 fixture
         working-directory: private-src
         run: |
           $ErrorActionPreference = 'Stop'
@@ -47,7 +56,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed.' }
           $compiler = Join-Path ${env:ProgramFiles(x86)} 'NSIS\makensis.exe'
           $candidate = Join-Path $env:RUNNER_TEMP 'MonitorIA-Protect-1.0.0-Setup.exe'
-          & $compiler /V2 "/DOUTPUT=$candidate" "/DPROTECT_COMMERCIAL_API=$env:PROTECT_API" protect/pilot/Setup.nsi
+          $pilot = Join-Path $env:RUNNER_TEMP 'MonitorIA-Protect-0.4.4-Fixture.exe'
+          & $compiler /V1 "/DOUTPUT=$pilot" (Join-Path $env:GITHUB_WORKSPACE 'pilot-src/protect/pilot/Setup.nsi') *> (Join-Path $env:RUNNER_TEMP 'protect-pilot-build.log')
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $pilot)) { throw 'Historical 0.4.4 fixture compilation failed.' }
+          & $compiler /V1 "/DOUTPUT=$candidate" "/DPROTECT_COMMERCIAL_API=$env:PROTECT_API" protect/pilot/Setup.nsi *> (Join-Path $env:RUNNER_TEMP 'protect-build.log')
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $candidate)) { throw 'Commercial package compilation failed.' }
 
       - name: Validate the installed candidate and commercial upgrade
@@ -55,8 +67,41 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $candidate = Join-Path $env:RUNNER_TEMP 'MonitorIA-Protect-1.0.0-Setup.exe'
-          & ./protect/pilot/qa/Test-WindowsCommercialPairing.ps1 -Setup $candidate -ExpectedApi $env:PROTECT_API
+          $pilot = Join-Path $env:RUNNER_TEMP 'MonitorIA-Protect-0.4.4-Fixture.exe'
+          $qaLog = Join-Path $env:RUNNER_TEMP 'protect-qa.log'
+          try {
+            & ./protect/pilot/qa/Test-WindowsCommercialPairing.ps1 -Setup $candidate -ExpectedApi $env:PROTECT_API -PilotSetup $pilot *> $qaLog
+            Get-Content -LiteralPath $qaLog | Select-String '^Installed (0.4.4|commercial UI)'
+          } catch {
+            $line = $_.InvocationInfo.ScriptLineNumber
+            $message = $_.Exception.Message
+            if ($message -notmatch '^[A-Za-z0-9.(), -]{3,160}$') { $message = 'See encrypted diagnostics.' }
+            throw "Windows qualification failed at line ${line}. $message"
+          }
           Get-FileHash -LiteralPath $candidate -Algorithm SHA256 | Select-Object -ExpandProperty Hash
+
+      - name: Encrypt internal diagnostics
+        if: failure()
+        shell: bash
+        env:
+          PROTECT_QA_ARTIFACT_KEY: ${{ secrets.PROTECT_QA_ARTIFACT_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$PROTECT_QA_ARTIFACT_KEY"
+          cd "$(cygpath -u "$RUNNER_TEMP")"
+          shopt -s nullglob
+          logs=(protect-*log)
+          if ((${#logs[@]})); then
+            tar -czf - "${logs[@]}" | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:PROTECT_QA_ARTIFACT_KEY -out protect-windows-diagnostics.tar.gz.enc
+          fi
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: failure()
+        with:
+          name: protect-1.0.0-upgrade-diagnostics
+          path: ${{ runner.temp }}/protect-windows-diagnostics.tar.gz.enc
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: Preserve only the qualified candidate in encrypted storage
         shell: bash
@@ -69,7 +114,8 @@ jobs:
           sha256sum MonitorIA-Protect-1.0.0-Setup.exe > candidate.sha256
           printf '%s\n' "$MONITORIA_SOURCE_SHA" > source.sha
           printf '%s\n' "$PROTECT_API" > endpoint.txt
-          tar -czf - MonitorIA-Protect-1.0.0-Setup.exe candidate.sha256 source.sha endpoint.txt | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:PROTECT_QA_ARTIFACT_KEY -out protect-1.0.0-qualified.tar.gz.enc
+          sha256sum MonitorIA-Protect-0.4.4-Fixture.exe > pilot.sha256
+          tar -czf - MonitorIA-Protect-1.0.0-Setup.exe MonitorIA-Protect-0.4.4-Fixture.exe candidate.sha256 pilot.sha256 source.sha endpoint.txt | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:PROTECT_QA_ARTIFACT_KEY -out protect-1.0.0-qualified.tar.gz.enc
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
