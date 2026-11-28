@@ -47,7 +47,7 @@ jobs:
           unzip -p signed.zip protect-signed-recovery.tar.gz.enc | openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:PROTECT_QA_ARTIFACT_KEY | tar -xzf - -C signed-recovered -- MonitorIA-Protect-1.0.0-Setup.exe SHA256SUMS.txt
           cd signed-recovered
           printf '%s  MonitorIA-Protect-1.0.0-Setup.exe\n' "$EXPECTED_EXE_SHA" | sha256sum --check
-          sha256sum --check SHA256SUMS.txt
+          tr -d '\r' < SHA256SUMS.txt | sha256sum --check
           echo 'Previously signed and qualified executable recovered intact.'
       - name: Verify Authenticode and official signer again without signing
         shell: pwsh
