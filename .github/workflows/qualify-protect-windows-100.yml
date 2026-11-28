@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  MONITORIA_SOURCE_SHA: f545cb2a8c70d13dbce89e94c79118711ad12ad8
+  MONITORIA_SOURCE_SHA: ddfbe813e9f876c7e3ede49e1ac29993a35dd803
   PROTECT_API: https://monitoria.cam/api/protect/installation
 
 jobs:
