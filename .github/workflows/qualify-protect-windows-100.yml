@@ -1,0 +1,79 @@
+name: Protect 1.0 Windows qualification
+
+on:
+  push:
+    branches: [ci/protect-windows-100]
+    paths: ['.github/workflows/qualify-protect-windows-100.yml', 'build-requests/protect-windows-100.txt']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: protect-windows-100-qualification
+  cancel-in-progress: false
+
+env:
+  MONITORIA_SOURCE_SHA: f545cb2a8c70d13dbce89e94c79118711ad12ad8
+  PROTECT_API: https://monitoria.cam/api/protect/installation
+
+jobs:
+  windows:
+    if: github.repository == 'BigCorps/MonitorIA-Downloads' && github.ref == 'refs/heads/ci/protect-windows-100'
+    runs-on: windows-2022
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          repository: BigCorps/MonitorIA
+          ref: ${{ env.MONITORIA_SOURCE_SHA }}
+          token: ${{ secrets.MONITORIA_PRIVATE_SOURCE_TOKEN }}
+          path: private-src
+          persist-credentials: false
+          show-progress: false
+
+      - name: Build unsigned commercial candidate
+        working-directory: private-src
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($PSVersionTable.PSEdition -ne 'Desktop' -or $PSVersionTable.PSVersion.ToString() -notlike '5.1.*') {
+            throw 'Native Windows PowerShell 5.1 is required.'
+          }
+          if ((git rev-parse HEAD).Trim() -cne $env:MONITORIA_SOURCE_SHA) { throw 'Wrong source revision.' }
+          choco install nsis -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed.' }
+          $compiler = Join-Path ${env:ProgramFiles(x86)} 'NSIS\makensis.exe'
+          $candidate = Join-Path $env:RUNNER_TEMP 'MonitorIA-Protect-1.0.0-Setup.exe'
+          & $compiler /V2 "/DOUTPUT=$candidate" "/DPROTECT_COMMERCIAL_API=$env:PROTECT_API" protect/pilot/Setup.nsi
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $candidate)) { throw 'Commercial package compilation failed.' }
+
+      - name: Validate the installed candidate and commercial upgrade
+        working-directory: private-src
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidate = Join-Path $env:RUNNER_TEMP 'MonitorIA-Protect-1.0.0-Setup.exe'
+          & ./protect/pilot/qa/Test-WindowsCommercialPairing.ps1 -Setup $candidate -ExpectedApi $env:PROTECT_API
+          Get-FileHash -LiteralPath $candidate -Algorithm SHA256 | Select-Object -ExpandProperty Hash
+
+      - name: Preserve only the qualified candidate in encrypted storage
+        shell: bash
+        env:
+          PROTECT_QA_ARTIFACT_KEY: ${{ secrets.PROTECT_QA_ARTIFACT_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$PROTECT_QA_ARTIFACT_KEY" || { echo '::error::PROTECT_QA_ARTIFACT_KEY is unavailable in Downloads.'; exit 1; }
+          cd "$(cygpath -u "$RUNNER_TEMP")"
+          sha256sum MonitorIA-Protect-1.0.0-Setup.exe > candidate.sha256
+          printf '%s\n' "$MONITORIA_SOURCE_SHA" > source.sha
+          printf '%s\n' "$PROTECT_API" > endpoint.txt
+          tar -czf - MonitorIA-Protect-1.0.0-Setup.exe candidate.sha256 source.sha endpoint.txt | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:PROTECT_QA_ARTIFACT_KEY -out protect-1.0.0-qualified.tar.gz.enc
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: protect-1.0.0-qualified
+          path: ${{ runner.temp }}/protect-1.0.0-qualified.tar.gz.enc
+          retention-days: 7
+          if-no-files-found: error
